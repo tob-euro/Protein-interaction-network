@@ -5,7 +5,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 
 from training.evaluate import load_trained_model
-from src.data.dataset import load_and_prepare_data
+from src.data_scripts.dataset import load_and_prepare_data
 from visualizations.pca import visualize_latent_space_pca, visualize_pca_variance
 from visualizations.hierarchical_clustering import plot_dendrogram, plot_cluster_sizes, plot_pca_by_cluster
 

@@ -5,8 +5,8 @@ import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-from src.models.latent_distance_model import LatentDistanceModel, LatentDistanceTrainer
-from src.data.dataset import ProteinInteractionDataset, load_and_prepare_data
+from src.model_classes.latent_distance_model import LatentDistanceModel, LatentDistanceTrainer
+from src.data_scripts.dataset import ProteinInteractionDataset, load_and_prepare_data
 from training.evaluate import evaluate_model
 
 

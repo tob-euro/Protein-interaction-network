@@ -7,7 +7,7 @@ import fastcluster
 from scipy.cluster.hierarchy import dendrogram, fcluster
 from sklearn.decomposition import PCA
 
-from src.data.dataset import load_and_prepare_data
+from src.data_scripts.dataset import load_and_prepare_data
 from training.evaluate import load_trained_model
 
 

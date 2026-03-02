@@ -5,7 +5,7 @@ from sklearn.decomposition import PCA
 from mpl_toolkits.mplot3d import Axes3D
 import networkx as nx
 import os
-from src.data.dataset import load_and_prepare_data
+from src.data_scripts.dataset import load_and_prepare_data
 from training.evaluate import load_trained_model
 
 

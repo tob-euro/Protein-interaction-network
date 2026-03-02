@@ -3,8 +3,8 @@ import torch
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, precision_recall_curve, roc_curve, confusion_matrix
 import matplotlib.pyplot as plt
 
-from src.data.dataset import ProteinInteractionDataset, load_and_prepare_data
-from src.models.latent_distance_model import LatentDistanceModel, BaselineLDM
+from src.data_scripts.dataset import ProteinInteractionDataset, load_and_prepare_data
+from src.model_classes.latent_distance_model import LatentDistanceModel, BaselineLDM
 
 
 def load_trained_model(model_path, only_re=False, device='cpu'):
