@@ -1,0 +1,33 @@
+# =========================================================
+# Latent Distance Model
+# =========================================================
+
+data:
+  path: data/results_PHYSICAL_Prob_Model_22_01_26.csv
+  test_size: 0.2
+  val_size: 0.1
+  random_state: 42
+
+model:
+  latent_dim: 32           # try 16, 32, 64, 128
+  distance_metric: euclidean  # euclidean | cosine
+  random_effects: true
+
+training:
+  epochs: 30
+  learning_rate: 0.001
+  batch_size: 512
+  weight_decay: 1.0e-5
+  pos_weight: 222.2        # ≈ 1 / 0.0045 (inverse positive rate)
+  num_workers: 4           # set to 0 on macOS/MPS if issues arise
+
+visualization:
+  pca_components: 2
+  pca_max_components: 50
+  label_top_n: 20
+  clustering_n_clusters: 8
+  clustering_truncate_level: 10
+
+paths:
+  models_dir: models
+  results_dir: results/figures
