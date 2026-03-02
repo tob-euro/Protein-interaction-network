@@ -8,7 +8,7 @@ from scipy.cluster.hierarchy import dendrogram, fcluster
 from sklearn.decomposition import PCA
 
 from src.data_scripts.dataset import load_and_prepare_data
-from training.evaluate import load_trained_model
+from src.training.evaluate import load_trained_model
 
 
 
