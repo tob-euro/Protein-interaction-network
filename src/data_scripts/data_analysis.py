@@ -4,6 +4,7 @@ import networkx as nx
 import matplotlib.pyplot as plt
 from collections import Counter
 import seaborn as sns
+import os
 
 sns.set_style('whitegrid')
 
@@ -11,6 +12,7 @@ sns.set_style('whitegrid')
 # SET THIS
 # =============================================================================
 FIGURES_DIR = "figures"
+os.makedirs(FIGURES_DIR, exist_ok=True)
 # =============================================================================
 
 
@@ -141,4 +143,4 @@ def main(csv_file):
 
 
 if __name__ == "__main__":
-    main("data/results_PHYSICAL_Prob_Model_22_01_26.csv")
+    main("data/results_PHYSICAL_Prob_Model_16_02_26.csv")

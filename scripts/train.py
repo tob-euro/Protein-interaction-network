@@ -16,7 +16,6 @@ def parse_args():
     parser.add_argument('--data',              type=str,   default=None,  help='Path to CSV data file')
     parser.add_argument('--latent-dim',        type=int,   default=None)
     parser.add_argument('--distance-metric',   type=str,   default=None,  choices=['euclidean', 'cosine'])
-    parser.add_argument('--no-random-effects', action='store_true')
     parser.add_argument('--epochs',            type=int,   default=None)
     parser.add_argument('--lr',                type=float, default=None)
     parser.add_argument('--batch-size',        type=int,   default=None)
@@ -28,7 +27,6 @@ def apply_overrides(cfg, args):
     if args.data:              cfg['data']['path']              = args.data
     if args.latent_dim:        cfg['model']['latent_dim']       = args.latent_dim
     if args.distance_metric:   cfg['model']['distance_metric']  = args.distance_metric
-    if args.no_random_effects: cfg['model']['random_effects']   = False
     if args.epochs:            cfg['training']['epochs']        = args.epochs
     if args.lr:                cfg['training']['learning_rate'] = args.lr
     if args.batch_size:        cfg['training']['batch_size']    = args.batch_size
@@ -61,7 +59,7 @@ def main():
     # 1. Load data
     # =========================================================================
     print("Step 1: Loading data...")
-    train_data, val_data, test_data, protein_to_idx, num_proteins = load_and_prepare_data(
+    train_data, val_data, test_data, protein_to_idx, num_proteins, neg_pos_ratio = load_and_prepare_data(
         d['path'], test_size=d['test_size'], val_size=d['val_size'], random_state=d['random_state'])
     print(f"\n  Proteins: {num_proteins}  |  "
           f"Train: {len(train_data)}  Val: {len(val_data)}  Test: {len(test_data)}")
@@ -84,10 +82,9 @@ def main():
     # 3. Model
     # =========================================================================
     print("\nStep 3: Initializing model...")
-    model = LatentDistanceModel(num_proteins=num_proteins, latent_dim=m['latent_dim'],
-                                distance_metric=m['distance_metric'], random_effects=m['random_effects'])
+    model = LatentDistanceModel(num_proteins=num_proteins, latent_dim=m['latent_dim'], distance_metric=m['distance_metric'])
     print(f"  Latent dim: {m['latent_dim']}  |  Metric: {m['distance_metric']}  |  "
-          f"Random effects: {m['random_effects']}  |  Params: {sum(p.numel() for p in model.parameters()):,}")
+          f"Params: {sum(p.numel() for p in model.parameters()):,}")
 
     # =========================================================================
     # 4. Train
@@ -97,12 +94,12 @@ def main():
     best_f1 = trainer.train(
         train_loader, val_loader,
         epochs=t['epochs'], lr=t['learning_rate'],
-        weight_decay=t['weight_decay'], pos_weight=t['pos_weight'],
+        weight_decay=t['weight_decay'], pos_weight=neg_pos_ratio,
     )
 
     save_dir = (f"models/LDM_dim={m['latent_dim']}_metric={m['distance_metric']}"
                 f"_epochs={t['epochs']}_lr={t['learning_rate']}"
-                f"_BS={t['batch_size']}_RE={m['random_effects']}")
+                f"_BS={t['batch_size']}")
     os.makedirs(save_dir, exist_ok=True)
 
     # =========================================================================
@@ -130,7 +127,6 @@ def main():
         'num_proteins':     num_proteins,
         'latent_dim':       m['latent_dim'],
         'distance_metric':  m['distance_metric'],
-        'random_effects':   m['random_effects'],
         'test_auc': auc, 'test_ap': ap, 'test_f1': f1,
     }, f"{save_dir}/latent_distance_model.pt")
     print(f"  Saved: {save_dir}/latent_distance_model.pt")

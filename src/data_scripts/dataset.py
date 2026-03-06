@@ -34,8 +34,13 @@ def load_and_prepare_data(csv_file, test_size=0.2, val_size=0.1, random_state=42
     """
     df = pd.read_csv(csv_file)
 
-    print(f"Loaded {len(df)} protein pairs")
-    print(f"Positive interactions: {df['interact'].sum()} ({df['interact'].mean()*100:.2f}%)")
+    total_interactions = len(df)
+    pos_interactions = df['interact'].sum()
+    negative_interactions = total_interactions - pos_interactions
+    neg_pos_ratio = negative_interactions / pos_interactions
+
+    print(f"Loaded {total_interactions} protein pairs")
+    print(f"Positive interactions: {pos_interactions} ({pos_interactions/total_interactions*100:.2f}%)")
 
     # Build vocabulary from full dataset (transductive: all proteins have embeddings)
     all_proteins = sorted(set(df['ensp_1']).union(set(df['ensp_2'])))
@@ -57,4 +62,4 @@ def load_and_prepare_data(csv_file, test_size=0.2, val_size=0.1, random_state=42
 
     print(f"Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
 
-    return train_data, val_data, test_data, protein_to_idx, num_proteins
+    return train_data, val_data, test_data, protein_to_idx, num_proteins, neg_pos_ratio

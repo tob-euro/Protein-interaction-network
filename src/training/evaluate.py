@@ -3,7 +3,6 @@ import torch
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, precision_recall_curve, roc_curve, confusion_matrix
 import matplotlib.pyplot as plt
 
-from src.data_scripts.dataset import ProteinInteractionDataset, load_and_prepare_data
 from src.model_classes.latent_distance_model import LatentDistanceModel, BaselineLDM
 
 
@@ -25,8 +24,7 @@ def load_trained_model(model_path, only_re=False, device='cpu'):
     model = cls(
         num_proteins=checkpoint['num_proteins'],
         latent_dim=checkpoint['latent_dim'],
-        distance_metric=checkpoint['distance_metric'],
-        random_effects=checkpoint['random_effects'],
+        distance_metric=checkpoint['distance_metric']
     )
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
@@ -34,7 +32,7 @@ def load_trained_model(model_path, only_re=False, device='cpu'):
 
     print(f"Loaded: {model_path}")
     print(f"  AUC {checkpoint['test_auc']:.4f}  AP {checkpoint['test_ap']:.4f}  F1 {checkpoint['test_f1']:.4f}")
-    print(f"  Latent dim: {checkpoint['latent_dim']}  Metric: {checkpoint['distance_metric']}  RE: {checkpoint['random_effects']}")
+    print(f"  Latent dim: {checkpoint['latent_dim']}  Metric: {checkpoint['distance_metric']}")
 
     return model, checkpoint['protein_to_idx'], checkpoint
 

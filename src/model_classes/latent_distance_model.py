@@ -10,30 +10,24 @@ class LatentDistanceModel(nn.Module):
     """
     Latent Distance Model for Link Prediction.
 
-    Without random effects: P(Y_ij = 1) = sigmoid(alpha - beta * ||z_i - z_j||)
-    With random effects:    P(Y_ij = 1) = sigmoid(r_i + r_j - beta * ||z_i - z_j||)
+    Likelihood:    P(Y_ij = 1) = sigmoid(r_i + r_j - beta * ||z_i - z_j||)
 
     Parameters:
         num_proteins:    number of proteins in the network
         latent_dim:      latent space dimensionality (e.g. 16, 32, 64, 128)
         distance_metric: 'euclidean' or 'cosine'
-        random_effects:  whether to use per-protein random effects
     """
 
-    def __init__(self, num_proteins, latent_dim=32, distance_metric='euclidean', random_effects=False):
+    def __init__(self, num_proteins, latent_dim=32, distance_metric='euclidean'):
         super(LatentDistanceModel, self).__init__()
 
         self.embeddings = nn.Embedding(num_proteins, latent_dim)
-        self.random_effect = random_effects
-        self.distance_metric = distance_metric
+        self.random_effects = nn.Embedding(num_proteins, 1)
         self.beta = nn.Parameter(torch.tensor(1.0))
 
-        if self.random_effect:
-            self.random_effects = nn.Embedding(num_proteins, 1)
-            nn.init.normal_(self.random_effects.weight, mean=0, std=0.1)
-        else:
-            self.alpha = nn.Parameter(torch.tensor(0.0))
+        self.distance_metric = distance_metric
 
+        nn.init.normal_(self.random_effects.weight, mean=0, std=0.1)
         nn.init.normal_(self.embeddings.weight, mean=0, std=0.1)
 
     def compute_distance(self, z1, z2):
@@ -48,11 +42,11 @@ class LatentDistanceModel(nn.Module):
         z2 = self.embeddings(protein2_idx)
         distance = self.compute_distance(z1, z2)
 
-        if self.random_effect:
-            r1 = self.random_effects(protein1_idx).squeeze(-1)
-            r2 = self.random_effects(protein2_idx).squeeze(-1)
-            return r1 + r2 - self.beta * distance
-        return self.alpha - self.beta * distance
+        r1 = self.random_effects(protein1_idx).squeeze(-1)
+        r2 = self.random_effects(protein2_idx).squeeze(-1)
+
+        logits = r1 + r2 - self.beta * distance
+        return logits
 
     def get_embeddings(self):
         return self.embeddings.weight.detach().cpu().numpy()
@@ -70,8 +64,8 @@ class BaselineLDM(LatentDistanceModel):
     latent distance term contributes beyond node-level popularity effects.
     """
 
-    def __init__(self, num_proteins, latent_dim=32, distance_metric='euclidean', random_effects=True):
-        super().__init__(num_proteins, latent_dim, distance_metric, random_effects)
+    def __init__(self, num_proteins, latent_dim=32, distance_metric='euclidean'):
+        super().__init__(num_proteins, latent_dim, distance_metric)
 
     def forward(self, protein1_idx, protein2_idx):
         r1 = self.random_effects(protein1_idx).squeeze(-1)
@@ -133,7 +127,6 @@ class LatentDistanceTrainer:
         Args:
             pos_weight: weight applied to positive class in BCEWithLogitsLoss.
                         Set to approx. (num_negatives / num_positives) to handle class imbalance.
-                        Configured via pos_weight in config.yaml.
         """
         criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight).to(self.device))
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)

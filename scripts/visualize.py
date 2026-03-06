@@ -12,7 +12,7 @@ from src.visualizations.hierarchical_clustering import plot_dendrogram, plot_clu
 # =============================================================================
 # SET THIS to the model you want to visualize
 # =============================================================================
-MODEL_DIR = "models/LDM_dim=32_metric=euclidean_epochs=30_lr=0.001_BS=512_RE=True"
+MODEL_DIR = "models/LDM_dim=32_metric=euclidean_epochs=5_lr=0.001_BS=512_RE=True"
 # =============================================================================
 
 CONFIG = "config/config.yaml"
@@ -39,8 +39,8 @@ def main():
 
     # Load data (needed for degree colouring in PCA)
     d = cfg['data']
-    train_data, val_data, test_data, _, _ = load_and_prepare_data(
-        d['path'], test_size=d['test_size'], val_size=d['val_size'], random_state=d['random_state'])
+    train_data, val_data, test_data, _, _, _ = load_and_prepare_data(
+        d['path'], test_size=d['test_size'], val_size=d['val_size'])
     all_data = pd.concat([train_data, val_data, test_data])
 
     v = cfg['visualization']

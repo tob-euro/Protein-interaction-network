@@ -11,14 +11,12 @@ data:
 model:
   latent_dim: 32           # try 16, 32, 64, 128
   distance_metric: euclidean  # euclidean | cosine
-  random_effects: true
 
 training:
   epochs: 30
   learning_rate: 0.001
   batch_size: 512
   weight_decay: 1.0e-5
-  pos_weight: 222.2        # ≈ 1 / 0.0045 (inverse positive rate)
   num_workers: 4           # set to 0 on macOS/MPS if issues arise
 
 visualization:
