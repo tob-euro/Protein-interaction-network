@@ -12,7 +12,7 @@ from src.visualizations.hierarchical_clustering import plot_dendrogram, plot_clu
 # =============================================================================
 # SET THIS to the model you want to visualize
 # =============================================================================
-MODEL_DIR = "models/LDM_dim=32_metric=euclidean_epochs=5_lr=0.001_BS=512_RE=True"
+MODEL_DIR = "models/LDM_dim=2_metric=euclidean_epochs=15_lr=0.001_BS=512"
 # =============================================================================
 
 CONFIG = "config/config.yaml"
@@ -33,7 +33,8 @@ def main():
     print(f"Saving to: {save_dir}\n")
 
     # Load model (CPU — embeddings are numpy anyway)
-    model, protein_to_idx, _ = load_trained_model(model_pt, device='cpu')
+    model, protein_to_idx, checkpoint = load_trained_model(model_pt, device='cpu')
+    latent_dim = checkpoint["latent_dim"]
     model.eval()
     idx_to_protein = {idx: p for p, idx in protein_to_idx.items()}
 
@@ -55,16 +56,17 @@ def main():
         n_components=2, idx_to_protein=idx_to_protein)
     plt.savefig(f"{save_dir}/latent_pca_2d.png", dpi=300, bbox_inches='tight')
     plt.close(); print(f"Saved: {save_dir}/latent_pca_2d.png")
+    
+    if latent_dim > 2:
+        fig, _, _ = visualize_latent_space_pca(
+            model, protein_to_idx, data=all_data,
+            n_components=3, idx_to_protein=idx_to_protein)
+        plt.savefig(f"{save_dir}/latent_pca_3d.png", dpi=300, bbox_inches='tight')
+        plt.close(); print(f"Saved: {save_dir}/latent_pca_3d.png")
 
-    fig, _, _ = visualize_latent_space_pca(
-        model, protein_to_idx, data=all_data,
-        n_components=3, idx_to_protein=idx_to_protein)
-    plt.savefig(f"{save_dir}/latent_pca_3d.png", dpi=300, bbox_inches='tight')
-    plt.close(); print(f"Saved: {save_dir}/latent_pca_3d.png")
-
-    fig, _, _ = visualize_pca_variance(model, max_components=v['pca_max_components'])
-    plt.savefig(f"{save_dir}/pca_variance.png", dpi=300, bbox_inches='tight')
-    plt.close(); print(f"Saved: {save_dir}/pca_variance.png")
+        fig, _, _ = visualize_pca_variance(model, max_components=v['pca_max_components'])
+        plt.savefig(f"{save_dir}/pca_variance.png", dpi=300, bbox_inches='tight')
+        plt.close(); print(f"Saved: {save_dir}/pca_variance.png")
 
     # =========================================================================
     # Hierarchical clustering
