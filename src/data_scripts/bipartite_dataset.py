@@ -63,8 +63,8 @@ def sample_gene_isoform_pairs(gene_to_isoforms, gene_to_idx, protein_to_idx, gen
 
         # Positive edges
         for iso in isoforms:
-            if iso not in protein_to_idx:
-                continue                          # safety: should not happen
+            # if iso not in protein_to_idx:
+            #     continue                          # safety: should not happen
             triples.append((g_idx, protein_to_idx[iso], 1))
 
         # Negative edges

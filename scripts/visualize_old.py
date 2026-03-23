@@ -4,21 +4,21 @@ import yaml
 import pandas as pd
 import matplotlib.pyplot as plt
 
-from src.training.evaluate import load_trained_mm_model
+from src.training.evaluate import load_trained_model
 from src.data_scripts.dataset import load_and_prepare_data
 from src.visualizations.pca import visualize_latent_space_pca, visualize_pca_variance
 from src.visualizations.hierarchical_clustering import plot_dendrogram, plot_cluster_sizes, plot_pca_by_cluster
 
 # =============================================================================
-# SET THIS to the multimodal model you want to visualize
+# SET THIS to the model you want to visualize
 # =============================================================================
-MODEL_DIR = "models/MM_dim=32_metric=euclidean_epochs=30_lr=0.001_BS=512_lIso=1.0_lGene=0.0865_negR=5"
+MODEL_DIR = "models/WeightedLDM_dim=32_metric=euclidean_epochs=30_lr=0.001_BS=512"
 # =============================================================================
 
 CONFIG = "config/config.yaml"
 
 def main():
-    model_pt = os.path.join(MODEL_DIR, 'multimodal_ldm.pt')
+    model_pt = os.path.join(MODEL_DIR, 'latent_distance_model.pt')
     if not os.path.exists(model_pt):
         sys.exit(f"Checkpoint not found: {model_pt}")
 
@@ -28,12 +28,13 @@ def main():
     save_dir = os.path.join(MODEL_DIR, 'visualizations')
     os.makedirs(save_dir, exist_ok=True)
 
-    print(f"\n{'='*70}\nVISUALIZATIONS (MULTIMODAL)\n{'='*70}")
+    print(f"\n{'='*70}\nVISUALIZATIONS\n{'='*70}")
     print(f"Model    : {MODEL_DIR}")
     print(f"Saving to: {save_dir}\n")
 
-    # Load multimodal model (CPU — embeddings are numpy anyway)
-    model, protein_to_idx, _ = load_trained_mm_model(model_pt, device='cpu')
+    # Load model (CPU — embeddings are numpy anyway)
+    model, protein_to_idx, checkpoint = load_trained_model(model_pt, device='cpu')
+    latent_dim = checkpoint["latent_dim"]
     model.eval()
     idx_to_protein = {idx: p for p, idx in protein_to_idx.items()}
 
@@ -55,16 +56,17 @@ def main():
         n_components=2, idx_to_protein=idx_to_protein)
     plt.savefig(f"{save_dir}/latent_pca_2d.png", dpi=300, bbox_inches='tight')
     plt.close(); print(f"Saved: {save_dir}/latent_pca_2d.png")
+    
+    if latent_dim > 2:
+        fig, _, _ = visualize_latent_space_pca(
+            model, protein_to_idx, data=all_data,
+            n_components=3, idx_to_protein=idx_to_protein)
+        plt.savefig(f"{save_dir}/latent_pca_3d.png", dpi=300, bbox_inches='tight')
+        plt.close(); print(f"Saved: {save_dir}/latent_pca_3d.png")
 
-    fig, _, _ = visualize_latent_space_pca(
-        model, protein_to_idx, data=all_data,
-        n_components=3, idx_to_protein=idx_to_protein)
-    plt.savefig(f"{save_dir}/latent_pca_3d.png", dpi=300, bbox_inches='tight')
-    plt.close(); print(f"Saved: {save_dir}/latent_pca_3d.png")
-
-    fig, _, _ = visualize_pca_variance(model, max_components=v['pca_max_components'])
-    plt.savefig(f"{save_dir}/pca_variance.png", dpi=300, bbox_inches='tight')
-    plt.close(); print(f"Saved: {save_dir}/pca_variance.png")
+        fig, _, _ = visualize_pca_variance(model, max_components=v['pca_max_components'])
+        plt.savefig(f"{save_dir}/pca_variance.png", dpi=300, bbox_inches='tight')
+        plt.close(); print(f"Saved: {save_dir}/pca_variance.png")
 
     # =========================================================================
     # Hierarchical clustering

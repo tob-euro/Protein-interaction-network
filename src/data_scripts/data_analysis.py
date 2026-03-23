@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import networkx as nx
 import matplotlib.pyplot as plt
-from collections import Counter
+from collections import Counter, defaultdict
 import seaborn as sns
 import os
 
@@ -45,7 +45,6 @@ def create_graph(df, use_interactions_only=False):
         if row['interact']:
             G.add_edge(row['ensp_1'], row['ensp_2'], interact=row['interact'])
 
-    print(f"Graph: {G.number_of_nodes()} nodes, {G.number_of_edges()} edges")
     return G
 
 
@@ -55,6 +54,12 @@ def analyze_network_statistics(G):
     print("="*70)
 
     degrees = np.array([d for n, d in G.degree()])
+
+    largest_cc_nodes = max(nx.connected_components(G), key=len)
+
+    # Create subgraph
+    G_lcc = G.subgraph(largest_cc_nodes).copy()
+
     print(f"\nBasic Properties:")
     print(f"  Nodes (proteins): {G.number_of_nodes()}")
     print(f"  Edges (interactions): {G.number_of_edges()}")
@@ -65,17 +70,15 @@ def analyze_network_statistics(G):
     print(f"  Mean degree: {np.mean(degrees):.2f}")
     print(f"  Median degree: {np.median(degrees):.2f}")
     print(f"  Max degree: {np.max(degrees)}")
+    print("\nConnected components analysis:")
+    print(f"  Connected components: {nx.number_connected_components(G)}")
+    print(f"  LCC nodes: {G_lcc.number_of_nodes()}")
+    print(f"  LCC edges: {G_lcc.number_of_edges()}")
 
-    return {
-        'num_nodes': G.number_of_nodes(),
-        'num_edges': G.number_of_edges(),
-        'density': nx.density(G),
-        'avg_degree': np.mean(degrees),
-    }
+    return degrees
 
 
-def plot_degree_distribution(G, save_path='degree_distribution.png'):
-    degrees = [d for n, d in G.degree()]
+def plot_degree_distribution(degrees, save_path='degree_distribution.png'):
     degree_counts = Counter(degrees)
 
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
@@ -112,12 +115,37 @@ def find_hub_proteins(G, top_n=10):
 
     return sorted_proteins[:top_n]
 
+def analyze_bipartite_network(df):
+    gene_isoforms = defaultdict(set)
+    
+    for _, row in df.iterrows():
+        gene_isoforms[row['gene_1']].add(row['enst_1'])
+        gene_isoforms[row['gene_2']].add(row['enst_2'])
+    
+    unique_genes = list(gene_isoforms.keys())
+    degrees = [len(isoforms) for isoforms in gene_isoforms.values()]
+    
+    n_unique_genes = len(unique_genes)
+    mean_degree   = np.mean(degrees)
+    median_degree = np.median(degrees)
+    min_degree    = np.min(degrees)
+    max_degree    = np.max(degrees)
+    
+    print(f"Number of unique genes:  {n_unique_genes}")
+    print(f"\nGene node degree statistics (# of isoforms per gene):")
+    print(f"  Mean:    {mean_degree:.3f}")
+    print(f"  Median:  {median_degree:.3f}")
+    print(f"  Min:     {min_degree}")
+    print(f"  Max:     {max_degree}")
+    
+    return degrees
+
+
 
 def plot_adjacency_matrix(G):
     A = nx.to_numpy_array(G)
     fig, ax = plt.subplots(figsize=(6, 6))
     im = ax.imshow(A)
-    fig.colorbar(im, ax=ax)
     ax.set_title("Adjacency Matrix")
     ax.set_xlabel("Node index")
     ax.set_ylabel("Node index")
@@ -125,6 +153,9 @@ def plot_adjacency_matrix(G):
     plt.show()
     print(f"Saved: {FIGURES_DIR}/adjacency_matrix.png")
 
+def dataframe_analysis(df):
+    pi = df["pi"].to_numpy()
+    print("pi")
 
 def main(csv_file):
     print("\n" + "="*70)
@@ -132,15 +163,27 @@ def main(csv_file):
     print("="*70 + "\n")
 
     df = load_network(csv_file)
+    dataframe_analysis(df)
 
-    G = create_graph(df, use_interactions_only=False)
-    analyze_network_statistics(G)
-    plot_degree_distribution(G)
-    find_hub_proteins(G, top_n=20)
+    # G = create_graph(df, use_interactions_only=False)
+    # degrees = analyze_network_statistics(G)
+    # plot_degree_distribution(degrees, save_path="Unipartite_degree_distribution.png")
 
-    G = create_graph(df, use_interactions_only=True)
-    plot_adjacency_matrix(G)
+    # find_hub_proteins(G, top_n=20)
+    # G_pos = create_graph(df, use_interactions_only=True)
+    # plot_adjacency_matrix(G_pos)
+
+    # print("\n" + "="*70)
+    # print("Bipartite Gene-Isoform Graph Analysis")
+    # print("="*70 + "\n")
+
+    # degrees_bi = analyze_bipartite_network(df)
+    # plot_degree_distribution(degrees_bi, save_path="Bipartite_degree_distribution.png")
+
+
+
+
 
 
 if __name__ == "__main__":
-    main("data/results_PHYSICAL_Prob_Model_16_02_26.csv")
+    main("data/results_PHYSICAL_Prob_Model_22_01_26.csv")

@@ -4,6 +4,7 @@ import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
+from scipy.stats import spearmanr
 
 
 class LatentDistanceModel(nn.Module):
@@ -181,3 +182,141 @@ class LatentDistanceTrainer:
         axes[1].grid(True)
         plt.tight_layout()
         return fig
+
+class WeightedLatentDistanceTrainer(LatentDistanceTrainer):
+    """
+    Trainer for LDM on weighted graphs using continuous pi values as targets.
+
+    Uses BCEWithLogitsLoss with per-sample weights proportional to pi,
+    so that pairs with stronger interaction signals contribute more to the loss.
+
+    Weight scheme:
+        - interact == 0: base_neg_weight (default 1.0)
+        - interact == 1: pos_weight_scale * pi  (linearly scaled by interaction strength)
+
+    This means a pair with pi=1.0 gets full pos_weight_scale,
+    a pair with pi=0.5 gets half, and negatives get base_neg_weight.
+    """
+
+    def __init__(self, model, device='cuda', pos_weight_scale=10.0, base_neg_weight=1.0):
+        super().__init__(model, device)
+        self.pos_weight_scale = pos_weight_scale
+        self.base_neg_weight = base_neg_weight
+
+    def _compute_sample_weights(self, labels, pi_values):
+        """
+        Compute per-sample loss weights.
+        Negatives (interact=0) get base_neg_weight.
+        Positives (interact=1) get pos_weight_scale * pi.
+        """
+        weights = torch.where(
+            labels == 0,
+            torch.full_like(pi_values, self.base_neg_weight),
+            self.pos_weight_scale * pi_values
+        )
+        return weights
+
+    def train_epoch(self, dataloader, optimizer, criterion):
+        self.model.train()
+        total_loss = 0
+        for protein1_idx, protein2_idx, labels, pi_values in dataloader:
+            protein1_idx = protein1_idx.to(self.device)
+            protein2_idx = protein2_idx.to(self.device)
+            labels       = labels.to(self.device)
+            pi_values    = pi_values.to(self.device)
+
+            predictions = self.model(protein1_idx, protein2_idx)
+
+            # BCEWithLogitsLoss with pi as soft targets and per-sample weights
+            weights = self._compute_sample_weights(labels, pi_values)
+            loss = criterion(predictions, pi_values)          # pi as target, not binary label
+            loss = (loss * weights).mean()
+
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            total_loss += loss.item()
+        return total_loss / len(dataloader)
+
+    def validate(self, dataloader, criterion):
+        self.model.eval()
+        total_loss = 0
+        all_preds, all_pi, all_labels = [], [], []
+        with torch.no_grad():
+            for protein1_idx, protein2_idx, labels, pi_values in dataloader:
+                protein1_idx = protein1_idx.to(self.device)
+                protein2_idx = protein2_idx.to(self.device)
+                labels       = labels.to(self.device)
+                pi_values    = pi_values.to(self.device)
+
+                predictions = self.model(protein1_idx, protein2_idx)
+
+                weights = self._compute_sample_weights(labels, pi_values)
+                loss = criterion(predictions, pi_values)
+                loss = (loss * weights).mean()
+                total_loss += loss.item()
+
+                all_preds.extend(predictions.cpu().numpy())
+                all_pi.extend(pi_values.cpu().numpy())
+                all_labels.extend(labels.cpu().numpy())
+
+        avg_loss = total_loss / len(dataloader)
+
+        # Binary metrics: use interact label with raw logit predictions
+        auc = roc_auc_score(all_labels, all_preds)
+        ap  = average_precision_score(all_labels, all_preds)
+        f1  = f1_score(all_labels, np.array(all_preds) > 0.5)
+
+        # Continuous metrics: on positives only (pi=0 negatives are uninformative for correlation)
+        all_preds  = np.array(all_preds)
+        all_pi     = np.array(all_pi)
+        all_labels = np.array(all_labels)
+        pos_mask   = all_labels == 1
+        if pos_mask.sum() > 1:
+            spearman_r, _ = spearmanr(all_preds[pos_mask], all_pi[pos_mask])
+        else:
+            spearman_r = float('nan')
+
+        return avg_loss, auc, ap, f1, spearman_r, all_preds, all_labels
+
+    def train(self, train_loader, val_loader, epochs=10, lr=0.001, weight_decay=1e-5, pos_weight=10.0):
+        """
+        BCEWithLogitsLoss with reduction='none' so we can apply per-sample weights manually.
+        pos_weight is dropped here — class imbalance is handled via pos_weight_scale * pi instead.
+        """
+        criterion = nn.BCEWithLogitsLoss(reduction='none')
+        optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
+
+        best_auc = 0
+        best_model_state = None
+
+        print(f"Training on {self.device}")
+        print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"pos_weight_scale: {self.pos_weight_scale} | base_neg_weight: {self.base_neg_weight}")
+        print("-" * 60)
+
+        for epoch in range(epochs):
+            train_loss = self.train_epoch(train_loader, optimizer, criterion)
+            val_loss, val_auc, val_ap, val_f1, spearman_r, _, _ = self.validate(val_loader, criterion)
+
+            self.train_losses.append(train_loss)
+            self.val_losses.append(val_loss)
+            self.val_aucs.append(val_auc)
+            self.val_aps.append(val_ap)
+            self.val_f1s.append(val_f1)
+
+            scheduler.step(val_auc)
+
+            if val_auc > best_auc:
+                best_auc = val_auc
+                best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
+
+            print(f"Epoch {epoch+1}/{epochs}  "
+                  f"loss {train_loss:.4f}/{val_loss:.4f}  "
+                  f"AUC {val_auc:.4f}  AP {val_ap:.4f}  "
+                  f"F1 {val_f1:.4f}  Spearman(pos) {spearman_r:.4f}")
+
+        self.model.load_state_dict(best_model_state)
+        print(f"\nBest validation AUC: {best_auc:.4f}")
+        return best_auc

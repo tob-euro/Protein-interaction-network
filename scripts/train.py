@@ -5,8 +5,8 @@ import torch
 import matplotlib.pyplot as plt
 from torch.utils.data import DataLoader
 
-from src.model_classes.latent_distance_model import LatentDistanceModel, LatentDistanceTrainer
-from src.data_scripts.dataset import ProteinInteractionDataset, load_and_prepare_data
+from src.model_classes.latent_distance_model import LatentDistanceModel, LatentDistanceTrainer, WeightedLatentDistanceTrainer
+from src.data_scripts.dataset import ProteinInteractionDataset, WeightedProteinInteractionDataset, load_and_prepare_data
 from src.training.evaluate import evaluate_model
 
 
@@ -68,13 +68,22 @@ def main():
     # 2. Dataloaders
     # =========================================================================
     print("\nStep 2: Creating dataloaders...")
-    train_loader = DataLoader(ProteinInteractionDataset(train_data, protein_to_idx),
+    # train_loader = DataLoader(ProteinInteractionDataset(train_data, protein_to_idx),
+    #                           batch_size=t['batch_size'], shuffle=True,
+    #                           num_workers=t['num_workers'], pin_memory=True)
+    # val_loader   = DataLoader(ProteinInteractionDataset(val_data, protein_to_idx),
+    #                           batch_size=t['batch_size'], shuffle=False,
+    #                           num_workers=t['num_workers'], pin_memory=True)
+    # test_loader  = DataLoader(ProteinInteractionDataset(test_data, protein_to_idx),
+    #                           batch_size=t['batch_size'], shuffle=False,
+    #                           num_workers=t['num_workers'], pin_memory=True)
+    train_loader = DataLoader(WeightedProteinInteractionDataset(train_data, protein_to_idx),
                               batch_size=t['batch_size'], shuffle=True,
                               num_workers=t['num_workers'], pin_memory=True)
-    val_loader   = DataLoader(ProteinInteractionDataset(val_data, protein_to_idx),
+    val_loader   = DataLoader(WeightedProteinInteractionDataset(val_data, protein_to_idx),
                               batch_size=t['batch_size'], shuffle=False,
                               num_workers=t['num_workers'], pin_memory=True)
-    test_loader  = DataLoader(ProteinInteractionDataset(test_data, protein_to_idx),
+    test_loader  = DataLoader(WeightedProteinInteractionDataset(test_data, protein_to_idx),
                               batch_size=t['batch_size'], shuffle=False,
                               num_workers=t['num_workers'], pin_memory=True)
 
@@ -90,14 +99,14 @@ def main():
     # 4. Train
     # =========================================================================
     print("\nStep 4: Training...")
-    trainer = LatentDistanceTrainer(model, device=device)
+    trainer = WeightedLatentDistanceTrainer(model, device=device, pos_weight_scale=neg_pos_ratio)
     best_f1 = trainer.train(
         train_loader, val_loader,
         epochs=t['epochs'], lr=t['learning_rate'],
         weight_decay=t['weight_decay'], pos_weight=neg_pos_ratio,
     )
 
-    save_dir = (f"models/LDM_dim={m['latent_dim']}_metric={m['distance_metric']}"
+    save_dir = (f"models/WeightedLDM_dim={m['latent_dim']}_metric={m['distance_metric']}"
                 f"_epochs={t['epochs']}_lr={t['learning_rate']}"
                 f"_BS={t['batch_size']}")
     os.makedirs(save_dir, exist_ok=True)

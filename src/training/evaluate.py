@@ -4,6 +4,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, pr
 import matplotlib.pyplot as plt
 
 from src.model_classes.latent_distance_model import LatentDistanceModel, BaselineLDM
+from src.model_classes.multimodal_ldm import MultimodalLDM
 
 
 def load_trained_model(model_path, only_re=False, device='cpu'):
@@ -54,7 +55,7 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
     all_preds, all_labels = [], []
 
     with torch.no_grad():
-        for protein1_idx, protein2_idx, labels in test_loader:
+        for protein1_idx, protein2_idx, labels, pi in test_loader:
             predictions = model(protein1_idx.to(device), protein2_idx.to(device))
             all_preds.extend(predictions.cpu().numpy())
             all_labels.extend(labels.numpy())
@@ -70,9 +71,9 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
     print(f"  Avg Prec:    {ap:.4f}")
     print(f"  F1:          {f1:.4f}")
     print(f"  Accuracy:    {(tp + tn) / total:.4f}")
-    print(f"  Recall:      {tp / (tp + fn):.4f}")
-    print(f"  Precision:   {tp / (tp + fp):.4f}")
-    print(f"  Specificity: {tn / (tn + fp):.4f}")
+    print(f"  Recall:      {tp / (tp + fn + 1e-5):.4f}")
+    print(f"  Precision:   {tp / (tp + fp + 1e-5):.4f}")
+    print(f"  Specificity: {tn / (tn + fp + 1e-5):.4f}")
 
     # ROC curve
     fpr, tpr, _ = roc_curve(all_labels, all_preds)
@@ -100,3 +101,34 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
     plt.show()
 
     return auc, ap, f1, all_preds, all_labels
+
+def load_trained_mm_model(model_path, device='cpu'):
+    """
+    Load a trained MultimodalLDM from a checkpoint file.
+
+    Args:
+        model_path: path to .pt checkpoint file (multimodal_ldm.pt)
+        device:     device to load onto
+
+    Returns:
+        model, protein_to_idx, checkpoint dict
+    """
+    checkpoint = torch.load(model_path, map_location=device)
+
+    model = MultimodalLDM(
+        num_proteins    = checkpoint['num_proteins'],
+        num_genes       = checkpoint['num_genes'],
+        latent_dim      = checkpoint['latent_dim'],
+        distance_metric = checkpoint['distance_metric'],
+    )
+    model.load_state_dict(checkpoint['model_state_dict'])
+    model = model.to(device)
+    model.eval()
+
+    print(f"Loaded: {model_path}")
+    print(f"  AUC {checkpoint['test_auc']:.4f}  AP {checkpoint['test_ap']:.4f}  F1 {checkpoint['test_f1']:.4f}")
+    print(f"  Latent dim: {checkpoint['latent_dim']}  Metric: {checkpoint['distance_metric']}")
+    print(f"  Isoforms: {checkpoint['num_proteins']}  Genes: {checkpoint['num_genes']}")
+    print(f"  λ_iso: {checkpoint['lambda_iso']}  λ_gene: {checkpoint['lambda_gene']}  neg_ratio: {checkpoint['neg_ratio']}")
+
+    return model, checkpoint['protein_to_idx'], checkpoint
