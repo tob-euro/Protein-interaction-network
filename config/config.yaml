@@ -3,17 +3,18 @@
 # =========================================================
 
 data:
-  path: data/results_PHYSICAL_Prob_Model_22_01_26.csv
+  path: data/results_PHYSICAL_Prob_Model_16_02_26_filtered.csv
   test_size: 0.2
   val_size: 0.1
   random_state: 42
+  alpha: 0.5          # fraction of train negatives replaced by unseen pairs each epoch
 
 model:
-  latent_dim: 32           # try 16, 32, 64, 128
+  latent_dim: 32
   distance_metric: euclidean  # euclidean | cosine
 
 training:
-  epochs: 30
+  epochs: 29
   learning_rate: 0.001
   batch_size: 512
   weight_decay: 1.0e-5
@@ -23,8 +24,14 @@ visualization:
   pca_components: 2
   pca_max_components: 50
   label_top_n: 20
-  clustering_n_clusters: 8
+  clustering_n_clusters: null   # null = auto-detect via height-gap + Calinski-Harabasz
+  clustering_n_clusters_max: 20 # upper bound of k search range when auto-detecting
   clustering_truncate_level: 10
+umap:
+  n_neighbors: 15      # increase for more global structure (try 30 for large graphs)
+  min_dist: 0.1        # decrease for tighter clusters (try 0.05)
+  sample_size: null    # null = use all proteins; set e.g. 10000 for speed
+  hub_percentile: 95   # top 5% by degree = hubs in the proximity plot
 
 paths:
   models_dir: models

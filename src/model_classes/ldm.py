@@ -128,11 +128,11 @@ class LatentDistanceTrainer:
             pos_weight: weight applied to positive class in BCEWithLogitsLoss.
                         Set to approx. (num_negatives / num_positives) to handle class imbalance.
         """
-        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight).to(self.device))
+        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, dtype=torch.float32).to(self.device))
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
 
-        best_f1 = 0
+        best_ap = 0
         best_model_state = None
 
         print(f"Training on {self.device}")
@@ -140,6 +140,9 @@ class LatentDistanceTrainer:
         print("-" * 60)
 
         for epoch in range(epochs):
+            if hasattr(train_loader.dataset, '_resample'):
+                train_loader.dataset._resample()
+
             train_loss = self.train_epoch(train_loader, optimizer, criterion)
             val_loss, val_auc, val_ap, val_f1, _, _ = self.validate(val_loader, criterion)
 
@@ -149,10 +152,10 @@ class LatentDistanceTrainer:
             self.val_aps.append(val_ap)
             self.val_f1s.append(val_f1)
 
-            scheduler.step(val_f1)
+            scheduler.step(val_ap)
 
-            if val_f1 > best_f1:
-                best_f1 = val_f1
+            if val_ap > best_ap:
+                best_ap = val_ap
                 best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
 
             print(f"Epoch {epoch+1}/{epochs}  "
@@ -160,8 +163,8 @@ class LatentDistanceTrainer:
                   f"AUC {val_auc:.4f}  AP {val_ap:.4f}  F1 {val_f1:.4f}")
 
         self.model.load_state_dict(best_model_state)
-        print(f"\nBest validation F1: {best_f1:.4f}")
-        return best_f1
+        print(f"\nBest validation AP: {best_ap:.4f}")
+        return best_ap
 
     def plot_training(self):
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
