@@ -19,7 +19,7 @@ def load_trained_model(model_path, only_re=False, device='cpu'):
     Returns:
         model, protein_to_idx, checkpoint dict
     """
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
     cls = BaselineLDM if only_re else LatentDistanceModel
     model = cls(
@@ -55,7 +55,7 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
     all_preds, all_labels = [], []
 
     with torch.no_grad():
-        for protein1_idx, protein2_idx, labels, pi in test_loader:
+        for protein1_idx, protein2_idx, labels in test_loader:
             predictions = model(protein1_idx.to(device), protein2_idx.to(device))
             all_preds.extend(predictions.cpu().numpy())
             all_labels.extend(labels.numpy())
@@ -71,9 +71,9 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
     print(f"  Avg Prec:    {ap:.4f}")
     print(f"  F1:          {f1:.4f}")
     print(f"  Accuracy:    {(tp + tn) / total:.4f}")
-    print(f"  Recall:      {tp / (tp + fn + 1e-5):.4f}")
-    print(f"  Precision:   {tp / (tp + fp + 1e-5):.4f}")
-    print(f"  Specificity: {tn / (tn + fp + 1e-5):.4f}")
+    print(f"  Recall:      {tp / (tp + fn):.4f}")
+    print(f"  Precision:   {tp / (tp + fp):.4f}")
+    print(f"  Specificity: {tn / (tn + fp):.4f}")
 
     # ROC curve
     fpr, tpr, _ = roc_curve(all_labels, all_preds)
@@ -113,7 +113,7 @@ def load_trained_mm_model(model_path, device='cpu'):
     Returns:
         model, protein_to_idx, checkpoint dict
     """
-    checkpoint = torch.load(model_path, map_location=device)
+    checkpoint = torch.load(model_path, map_location=device, weights_only=False)
 
     # Restore ESM-C features from the buffer saved inside model_state_dict
     esmc_features = checkpoint['model_state_dict'].get('esmc_features', None)

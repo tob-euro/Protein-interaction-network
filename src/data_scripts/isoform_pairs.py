@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+import itertools
+from collections import Counter
 import torch
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
@@ -167,8 +169,6 @@ def diagnose_split(train_dataset, val_data, test_data):
     Print a full diagnostic of the train/val/test split.
     Call immediately after load_and_prepare_data().
     """
-    import itertools
-    from collections import Counter
 
     print("\n" + "="*70)
     print("SPLIT DIAGNOSTICS")
@@ -242,3 +242,167 @@ def diagnose_split(train_dataset, val_data, test_data):
               f"max {max(d)} | mean {np.mean(d):.1f}")
 
     print("\n" + "="*70 + "\n")
+
+
+# =============================================================================
+# Inductive isoform-level split
+# =============================================================================
+
+def load_and_prepare_data_inductive(csv_file, test_size=0.2, val_size=0.1, random_state=42):
+    """
+    Load protein interaction data with isoform-level splitting for inductive learning.
+
+    Each isoform is randomly assigned to exactly one partition (train / val / test).
+    A pair (i, j) is placed in the 'hardest' split of the two isoforms:
+        both in train  → train
+        either in val  → val   (neither in test)
+        either in test → test
+
+    Val and test therefore exclusively contain interactions involving at least one
+    isoform that was never seen during training, enabling evaluation of true
+    inductive generalisation.
+
+    For MultimodalLDM with ESM-C features no model changes are needed: the learned
+    encoder  z_i = esmc_proj(esmc_features[i]) + residual_i  applies to any isoform;
+    unseen-isoform residuals remain at their zero initialisation (they never receive
+    gradients), so their latent position is determined purely by the ESM-C projection.
+
+    Args:
+        csv_file:     path to interaction CSV (columns: ensp_1, ensp_2, interact, ...)
+        test_size:    fraction of *isoforms* assigned to the test partition
+        val_size:     fraction of *isoforms* assigned to the val partition
+        random_state: RNG seed
+
+    Returns:
+        train_dataset  – ProteinInteractionDataset wrapping training interactions
+        val_data       – DataFrame of val interactions
+        test_data      – DataFrame of test interactions
+        protein_to_idx – {ensp_id: index} covering ALL isoforms
+        num_proteins   – total number of unique isoforms
+        neg_pos_ratio  – neg/pos ratio in train split (use as pos_weight)
+        train_proteins – frozenset of isoform IDs assigned to the train partition
+        val_proteins   – frozenset of isoform IDs assigned to the val partition
+        test_proteins  – frozenset of isoform IDs assigned to the test partition
+    """
+    df = pd.read_csv(csv_file)
+
+    total_interactions = len(df)
+    pos_interactions   = df['interact'].sum()
+    print(f"Loaded {total_interactions} protein pairs")
+    print(f"Positive interactions: {int(pos_interactions)} "
+          f"({pos_interactions / total_interactions * 100:.2f}%)")
+
+    # Build vocabulary from full dataset (all isoforms get an embedding index)
+    all_proteins   = sorted(set(df['ensp_1']).union(set(df['ensp_2'])))
+    protein_to_idx = {p: i for i, p in enumerate(all_proteins)}
+    num_proteins   = len(all_proteins)
+    print(f"Total unique isoforms: {num_proteins:,}")
+
+    # Randomly partition isoforms into train / val / test
+    rng         = np.random.default_rng(random_state)
+    protein_arr = np.array(all_proteins)
+    perm        = rng.permutation(num_proteins)
+
+    n_test = int(num_proteins * test_size)
+    n_val  = int(num_proteins * val_size)
+
+    test_proteins  = frozenset(protein_arr[perm[:n_test]])
+    val_proteins   = frozenset(protein_arr[perm[n_test:n_test + n_val]])
+    train_proteins = frozenset(protein_arr[perm[n_test + n_val:]])
+
+    print(f"Isoform partition: {len(train_proteins):,} train  "
+          f"{len(val_proteins):,} val  {len(test_proteins):,} test")
+
+    # Assign interactions to splits (vectorised)
+    # rank: 0 = train, 1 = val, 2 = test
+    rank1     = np.where(df['ensp_1'].isin(test_proteins), 2,
+                np.where(df['ensp_1'].isin(val_proteins),  1, 0))
+    rank2     = np.where(df['ensp_2'].isin(test_proteins), 2,
+                np.where(df['ensp_2'].isin(val_proteins),  1, 0))
+    pair_rank = np.maximum(rank1, rank2)
+
+    train_data = df[pair_rank == 0].reset_index(drop=True)
+    val_data   = df[pair_rank == 1].reset_index(drop=True)
+    test_data  = df[pair_rank == 2].reset_index(drop=True)
+
+    print(f"Interaction split: train {len(train_data):,}  val {len(val_data):,}  test {len(test_data):,}")
+    for name, split in [('Train', train_data), ('Val', val_data), ('Test', test_data)]:
+        if len(split):
+            n_pos = int(split['interact'].sum())
+            print(f"  {name}: {n_pos:,} pos  {len(split) - n_pos:,} neg  "
+                  f"({100 * n_pos / len(split):.2f}% positive)")
+
+    neg_pos_ratio = ((len(train_data) - int(train_data['interact'].sum()))
+                     / max(int(train_data['interact'].sum()), 1))
+
+    train_dataset = ProteinInteractionDataset(train_data, protein_to_idx)
+
+    return (train_dataset, train_data, val_data, test_data,
+            protein_to_idx, num_proteins, neg_pos_ratio,
+            train_proteins, val_proteins, test_proteins)
+
+
+def diagnose_split_inductive(train_data, val_data, test_data,
+                              train_proteins, val_proteins, test_proteins):
+    """
+    Print diagnostics for an isoform-level inductive split.
+
+    1. Isoform partition sizes and overlap (must be zero)
+    2. Class balance per split
+    3. Pair composition: both-train / cross (one unseen) / both-unseen
+    4. Degree distribution on positive edges
+    """
+    print("\n" + "=" * 70)
+    print("INDUCTIVE SPLIT DIAGNOSTICS")
+    print("=" * 70)
+
+    # [1] Partition sizes and overlap
+    tv = len(train_proteins & val_proteins)
+    tt = len(train_proteins & test_proteins)
+    vt = len(val_proteins   & test_proteins)
+    print(f"\n[1] ISOFORM PARTITION")
+    print(f"  Train: {len(train_proteins):,}   Val: {len(val_proteins):,}   Test: {len(test_proteins):,}")
+    print(f"  Train∩Val: {tv}  Train∩Test: {tt}  Val∩Test: {vt}  (all must be 0)")
+    print(f"  {'✓ No isoform leakage.' if tv + tt + vt == 0 else '✗ WARNING: overlap found.'}")
+
+    # [2] Class balance
+    splits = {'Train': train_data, 'Val': val_data, 'Test': test_data}
+    print(f"\n[2] CLASS BALANCE")
+    print(f"  {'Split':<8} {'Total':>10} {'Positives':>12} {'Negatives':>12} {'Pos %':>8}")
+    print(f"  {'-' * 54}")
+    for name, df in splits.items():
+        n     = len(df)
+        n_pos = int(df['interact'].sum())
+        pct   = 100 * n_pos / n if n > 0 else 0.0
+        print(f"  {name:<8} {n:>10,} {n_pos:>12,} {n - n_pos:>12,} {pct:>7.3f}%")
+
+    # [3] Pair composition
+    print(f"\n[3] PAIR COMPOSITION")
+    print(f"  {'Split':<8} {'both-train':>12} {'cross (1 unseen)':>18} {'both-unseen':>14}")
+    print(f"  {'-' * 56}")
+    for name, df in splits.items():
+        if len(df) == 0:
+            continue
+        r1 = np.where(df['ensp_1'].isin(train_proteins), 0, 1)
+        r2 = np.where(df['ensp_2'].isin(train_proteins), 0, 1)
+        both_train  = int(((r1 == 0) & (r2 == 0)).sum())
+        cross       = int(((r1 + r2) == 1).sum())
+        both_unseen = int(((r1 == 1) & (r2 == 1)).sum())
+        print(f"  {name:<8} {both_train:>12,} {cross:>18,} {both_unseen:>14,}")
+    print("  → Val/Test 'both-train' count should be 0.")
+
+    # [4] Degree distribution on positive edges
+    print(f"\n[4] DEGREE DISTRIBUTION (positive edges only)")
+    for name, df in splits.items():
+        pos = df[df['interact'] == 1]
+        if len(pos) == 0:
+            print(f"  {name}: no positives")
+            continue
+        import itertools
+        from collections import Counter
+        deg = Counter(itertools.chain(pos['ensp_1'], pos['ensp_2']))
+        d   = list(deg.values())
+        print(f"  {name:<6}: {len(pos):,} pos edges | {len(deg):,} isoforms | "
+              f"max {max(d)} | mean {np.mean(d):.1f}")
+
+    print("\n" + "=" * 70 + "\n")

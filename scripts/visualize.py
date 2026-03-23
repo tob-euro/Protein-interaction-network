@@ -10,7 +10,7 @@ from src.visualizations.pca import visualize_latent_space_pca, visualize_pca_var
 from src.visualizations.hierarchical_clustering import plot_dendrogram, plot_cluster_sizes, plot_pca_by_cluster
 
 # =============================================================================
-MODEL_DIR = "models/MM_dim=32_metric=euclidean_epochs=30_lr=0.001_BS=512_lIso=1.0_lGene=0.5_negR=5"
+MODEL_DIR = "models/INDUCTIVE_MM_dim=32_metric=euclidean_epochs=29_lr=0.001_BS=512_lIso=1.0_lGene=0.1216_negR=5"
 # =============================================================================
 
 CONFIG = "config/config.yaml"

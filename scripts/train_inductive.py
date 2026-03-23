@@ -1,3 +1,20 @@
+"""
+train_inductive.py — Inductive isoform-level training script.
+
+Mirrors train.py but uses load_and_prepare_data_inductive() to split data at
+the isoform level rather than at the gene-pair level.
+
+Each isoform is assigned to exactly one partition (train / val / test).
+Val and test interactions each involve at least one isoform never seen during
+training.  For MultimodalLDM + ESM-C this is fully inductive: unseen isoform
+positions come entirely from the learned ESM-C projection.
+
+Usage:
+    python scripts/train_inductive.py --model-type multimodal [options]
+
+All arguments are identical to train.py except:
+  --alpha is removed (ClosedWorldTrainDataset is not used in inductive mode).
+"""
 import argparse
 import os
 import yaml
@@ -8,7 +25,11 @@ from torch.utils.data import DataLoader
 
 from src.model_classes.ldm import LatentDistanceModel, LatentDistanceTrainer
 from src.model_classes.mm_ldm import MultimodalLDM, MultimodalTrainer
-from src.data_scripts.isoform_pairs import ProteinInteractionDataset, load_and_prepare_data, diagnose_split
+from src.data_scripts.isoform_pairs import (
+    ProteinInteractionDataset,
+    load_and_prepare_data_inductive,
+    diagnose_split_inductive,
+)
 from src.data_scripts.gene_isoform_pairs import GeneIsoformDataset, prepare_gene_isoform_splits
 from src.data_scripts.gene_pairs import GeneGeneDataset, prepare_gene_gene_splits
 from src.training.evaluate import evaluate_model
@@ -16,10 +37,8 @@ from src.training.evaluate import evaluate_model
 
 def parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    # Shared
     parser.add_argument('--model-type',      type=str,   default='ldm',
-                        choices=['ldm', 'multimodal'],
-                        help='Which model to train')
+                        choices=['ldm', 'multimodal'])
     parser.add_argument('--config',          type=str,   default='config/config.yaml')
     parser.add_argument('--data',            type=str,   default=None)
     parser.add_argument('--latent-dim',      type=int,   default=None)
@@ -30,21 +49,17 @@ def parse_args():
     parser.add_argument('--batch-size',      type=int,   default=None)
     parser.add_argument('--weight-decay',    type=float, default=None)
     # Multimodal-only
-    parser.add_argument('--lambda-iso',      type=float, default=1.0,
-                        help='[multimodal] Loss weight for isoform–isoform component')
-    parser.add_argument('--lambda-gene',        type=float, default=0.5,
-                        help='[multimodal] Loss weight for gene–isoform bipartite component')
-    parser.add_argument('--neg-ratio',          type=int,   default=5,
-                        help='[multimodal] Negative samples per positive gene–isoform edge')
-    parser.add_argument('--gene-batch-size',    type=int,   default=512,
-                        help='[multimodal] Batch size for gene–isoform loader')
-    parser.add_argument('--lambda-complex',     type=float, default=0.5,
-                        help='[multimodal] Loss weight for gene–gene STRING component (0.0 = disabled)')
-    parser.add_argument('--complex-batch-size', type=int,   default=512,
-                        help='[multimodal] Batch size for gene–gene loader')
-    parser.add_argument('--esmc',               type=str,   default='data/esmc_globemb_noduplicates_15092025.csv',
-                        help='[multimodal] Path to ESM-C global embedding CSV (ENSP + feature cols). '
-                             'Set to empty string to disable and use learned embeddings instead.')
+    parser.add_argument('--lambda-iso',         type=float, default=1.0)
+    parser.add_argument('--lambda-gene',        type=float, default=0.5)
+    parser.add_argument('--neg-ratio',          type=int,   default=5)
+    parser.add_argument('--gene-batch-size',    type=int,   default=512)
+    parser.add_argument('--lambda-complex',     type=float, default=0.5)
+    parser.add_argument('--complex-batch-size', type=int,   default=512)
+    parser.add_argument('--esmc',               type=str,
+                        default='data/esmc_globemb_noduplicates_15092025.csv',
+                        help='Path to ESM-C global embedding CSV. '
+                             'Required for truly inductive inference; '
+                             'set to empty string to fall back to learned embeddings.')
     return parser.parse_args()
 
 
@@ -69,34 +84,35 @@ def main():
     m = cfg['model']
     t = cfg['training']
 
-    # =========================================================================
-    # Device
-    # =========================================================================
     device = ('cuda' if torch.cuda.is_available() else
               'mps'  if torch.backends.mps.is_available() else 'cpu')
 
     print(f"\n{'='*70}")
-    print(f"TRAINING {'MULTIMODAL ' if args.model_type == 'multimodal' else ''}LATENT DISTANCE MODEL")
+    print(f"INDUCTIVE TRAINING — {'MULTIMODAL ' if args.model_type == 'multimodal' else ''}LATENT DISTANCE MODEL")
     print(f"{'='*70}")
     print(f"Device: {device}")
     if device == 'cuda':
         print(f"GPU: {torch.cuda.get_device_name(0)}")
         print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
-    if args.model_type == 'multimodal':
-        print(f"λ_iso={args.lambda_iso}  λ_gene={args.lambda_gene}  λ_complex={args.lambda_complex}  neg_ratio={args.neg_ratio}  (pos_weights auto-computed from data)")
+    print(f"Split: isoform-level (inductive)")
     print(f"{'='*70}\n")
 
     # =========================================================================
-    # 1. Load isoform-pair data
+    # 1. Load data — isoform-level inductive split
     # =========================================================================
-    print("Step 1: Loading data...")
-    train_dataset, train_data, val_data, test_data, protein_to_idx, num_proteins, neg_pos_ratio = \
-        load_and_prepare_data(
-            d['path'], test_size=d['test_size'], val_size=d['val_size'],
-            random_state=d['random_state'], alpha=d.get('alpha', 0.0))
-    print(f"\n  Proteins: {num_proteins:,}  |  "
-          f"Train: {len(train_dataset):,}  Val: {len(val_data):,}  Test: {len(test_data):,}")
-    diagnose_split(train_dataset, val_data, test_data)
+    print("Step 1: Loading data (isoform-level inductive split)...")
+    (train_dataset, train_data, val_data, test_data,
+     protein_to_idx, num_proteins, neg_pos_ratio,
+     train_proteins, val_proteins, test_proteins) = load_and_prepare_data_inductive(
+        d['path'],
+        test_size=d['test_size'],
+        val_size=d['val_size'],
+        random_state=d['random_state'],
+    )
+    print(f"\n  Isoforms: {num_proteins:,}  |  "
+          f"Train pairs: {len(train_dataset):,}  Val: {len(val_data):,}  Test: {len(test_data):,}")
+    diagnose_split_inductive(train_data, val_data, test_data,
+                              train_proteins, val_proteins, test_proteins)
 
     # =========================================================================
     # 2. Dataloaders
@@ -112,12 +128,13 @@ def main():
                               batch_size=t['batch_size'], shuffle=False,
                               num_workers=t['num_workers'])
 
-    # Multimodal: build gene–isoform and gene–gene loaders
-    gene_train_loader = None
-    gene_iso_ratio    = 5.0
-    gene_gene_ratio   = 5.0
-    num_genes         = 0
-    gene_to_idx       = {}
+    gene_train_loader    = None
+    complex_train_loader = None
+    gene_iso_ratio       = 5.0
+    gene_gene_ratio      = 5.0
+    num_genes            = 0
+    gene_to_idx          = {}
+
     if args.model_type == 'multimodal':
         print("\nStep 2b: Building gene–isoform bipartite graph...")
         df_full = pd.read_csv(d['path'])
@@ -133,13 +150,10 @@ def main():
                                        batch_size=args.gene_batch_size, shuffle=True,
                                        num_workers=t['num_workers'])
 
-        # Gene–gene modality — only built when lambda_complex > 0
-        complex_train_loader = None
         if args.lambda_complex > 0:
             print("\nStep 2c: Building gene–gene STRING interaction data...")
             complex_train_t, _, _, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
-                gene_to_idx,
-                train_data, val_data, test_data,
+                gene_to_idx, train_data, val_data, test_data,
             )
             num_genes = len(gene_to_idx)
             print(f"  Total genes (incl. STRING-only): {num_genes:,}  |  "
@@ -155,7 +169,6 @@ def main():
     # =========================================================================
     print("\nStep 3: Initialising model...")
 
-    # Load ESM-C features (multimodal only)
     esmc_features = None
     if args.model_type == 'multimodal' and args.esmc:
         print(f"  Loading ESM-C embeddings from {args.esmc} ...")
@@ -168,8 +181,13 @@ def main():
         n_missing = (esmc_df.reindex(ordered_ensp).isna().any(axis=1)).sum()
         print(f"  ESM-C: {esmc_features.shape[1]}-dim features for {len(ordered_ensp):,} proteins "
               f"({n_missing:,} missing → zero-filled)")
+        n_unseen = len(val_proteins) + len(test_proteins)
+        print(f"  Inductive: {n_unseen:,} unseen isoforms will use ESM-C projection only (residual=0)")
 
     if args.model_type == 'ldm':
+        if not args.esmc:
+            print("  WARNING: LDM without ESM-C has no inductive capacity — "
+                  "unseen isoform embeddings remain at random initialisation.")
         model = LatentDistanceModel(
             num_proteins=num_proteins,
             latent_dim=m['latent_dim'],
@@ -186,23 +204,22 @@ def main():
         print(f"  Gene embeddings: {num_genes:,} × {m['latent_dim']}")
         if esmc_features is not None:
             print(f"  Isoform positions: ESM-C proj ({esmc_features.shape[1]}→{m['latent_dim']}) + residual")
+            # NOTE: projection is NOT frozen in inductive mode.
+            # Freezing it (as in the transductive script) causes residuals to overfit
+            # training isoforms while unseen isoforms are stuck at the fixed prior.
+            # An unfrozen projection learns a generalising encoder that applies
+            # equally to seen and unseen isoforms at inference time.
 
-            # Freeze projection → z_i = FIXED_PRIOR[i] + learnable_residual[i]
-            # This makes training dynamics identical to the learned-embedding
-            # architecture (local sparse updates) while keeping ESM-C prior.
-            model.freeze_projection()
-
-            # Place gene embeddings at the centroid of their isoforms'
-            # projected positions so gene–isoform distances are immediately
-            # discriminative.
             gene_to_isoforms = {}
-            for g, iso in zip(df_full['gene_1'], df_full['ensp_1']):
-                gene_to_isoforms.setdefault(g, set()).add(iso)
-            for g, iso in zip(df_full['gene_2'], df_full['ensp_2']):
-                gene_to_isoforms.setdefault(g, set()).add(iso)
+            if 'df_full' in dir():
+                for g, iso in zip(df_full['gene_1'], df_full['ensp_1']):
+                    gene_to_isoforms.setdefault(g, set()).add(iso)
+                for g, iso in zip(df_full['gene_2'], df_full['ensp_2']):
+                    gene_to_isoforms.setdefault(g, set()).add(iso)
             model.init_gene_centroids(gene_to_idx, gene_to_isoforms, protein_to_idx)
         else:
             print(f"  Isoform positions: learned embeddings ({num_proteins:,} × {m['latent_dim']})")
+
     n_total     = sum(p.numel() for p in model.parameters())
     n_trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  Latent dim: {m['latent_dim']}  |  Metric: {m['distance_metric']}  |  "
@@ -224,7 +241,7 @@ def main():
         best_ap = trainer.train(
             iso_train_loader     = train_loader,
             gene_train_loader    = gene_train_loader,
-            complex_train_loader = complex_train_loader or gene_train_loader,  # fallback if complex disabled
+            complex_train_loader = complex_train_loader or gene_train_loader,
             val_loader           = val_loader,
             epochs               = t['epochs'],
             lr                   = t['learning_rate'],
@@ -241,10 +258,10 @@ def main():
     # 5. Save dir
     # =========================================================================
     if args.model_type == 'ldm':
-        save_dir = (f"models/LDM_dim={m['latent_dim']}_metric={m['distance_metric']}"
+        save_dir = (f"models/INDUCTIVE_LDM_dim={m['latent_dim']}_metric={m['distance_metric']}"
                     f"_epochs={t['epochs']}_lr={t['learning_rate']}_BS={t['batch_size']}")
     else:
-        save_dir = (f"models/MM_dim={m['latent_dim']}_metric={m['distance_metric']}"
+        save_dir = (f"models/INDUCTIVE_MM_dim={m['latent_dim']}_metric={m['distance_metric']}"
                     f"_epochs={t['epochs']}_lr={t['learning_rate']}_BS={t['batch_size']}"
                     f"_lIso={args.lambda_iso}_lGene={args.lambda_gene}_negR={args.neg_ratio}")
     os.makedirs(save_dir, exist_ok=True)
@@ -275,6 +292,10 @@ def main():
         'latent_dim':       m['latent_dim'],
         'distance_metric':  m['distance_metric'],
         'model_type':       args.model_type,
+        'split_mode':       'inductive_isoform',
+        'train_proteins':   list(train_proteins),
+        'val_proteins':     list(val_proteins),
+        'test_proteins':    list(test_proteins),
         'test_auc': auc, 'test_ap': ap, 'test_f1': f1,
     }
     if args.model_type == 'multimodal':
@@ -287,14 +308,14 @@ def main():
             'lambda_complex': args.lambda_complex,
             'esmc_path':      args.esmc or None,
         })
-        ckpt_name = 'multimodal_ldm.pt'
+        ckpt_name = 'multimodal_ldm_inductive.pt'
     else:
-        ckpt_name = 'latent_distance_model.pt'
+        ckpt_name = 'latent_distance_model_inductive.pt'
 
     torch.save(checkpoint, f"{save_dir}/{ckpt_name}")
     print(f"  Saved: {save_dir}/{ckpt_name}")
 
-    print(f"\n{'='*70}\nTRAINING COMPLETE")
+    print(f"\n{'='*70}\nTRAINING COMPLETE (INDUCTIVE)")
     print(f"Best Val AP: {best_ap:.4f}  |  Test AUC: {auc:.4f}  |  AP: {ap:.4f}")
     print(f"Saved to: {save_dir}\n{'='*70}\n")
 
