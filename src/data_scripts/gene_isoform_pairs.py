@@ -4,7 +4,6 @@ import torch
 from torch.utils.data import Dataset
 from sklearn.model_selection import train_test_split
 
-
 # =============================================================================
 # Graph construction
 # =============================================================================
@@ -63,15 +62,15 @@ def sample_gene_isoform_pairs(gene_to_isoforms, gene_to_idx, protein_to_idx, gen
 
         # Positive edges
         for iso in isoforms:
-            # if iso not in protein_to_idx:
-            #     continue                          # safety: should not happen
+            if iso not in protein_to_idx:
+                continue
             triples.append((g_idx, protein_to_idx[iso], 1))
 
         # Negative edges
         n_neg        = len(isoforms) * neg_ratio
         sampled      = 0
         attempts     = 0
-        max_attempts = n_neg * 20                 # avoid infinite loop
+        max_attempts = n_neg * 20
 
         while sampled < n_neg and attempts < max_attempts:
             candidates = all_iso_arr[rng.integers(0, len(all_iso_arr), size=n_neg - sampled + 10)]
@@ -92,22 +91,23 @@ def sample_gene_isoform_pairs(gene_to_isoforms, gene_to_idx, protein_to_idx, gen
     return triples
 
 
-def prepare_bipartite_splits(df, protein_to_idx, train_data, val_data, test_data,
-                              neg_ratio=5, random_state=42):
+def prepare_gene_isoform_splits(df, protein_to_idx, train_data, val_data, test_data,
+                                 neg_ratio=5, random_state=42):
     """
     Convenience wrapper: builds the bipartite graph and produces
     train/val/test triple lists aligned with the isoform-pair splits.
 
     Returns:
-    - gene_to_idx, train_triples, val_triples, test_triples
+    - gene_to_idx, train_triples, val_triples, test_triples, neg_pos_ratio
+      neg_pos_ratio is computed from the train split and should be used as
+      pos_weight in BCEWithLogitsLoss for the gene-isoform component.
     """
     gene_to_idx, gene_to_isoforms = build_gene_isoform_graph(df)
 
-    # Determine which genes belong to each split (union of gene_1 and gene_2)
     def gene_set(split_df):
         return set(split_df['gene_1']) | set(split_df['gene_2'])
 
-    print('\nSampling bipartite edges per split:')
+    print('\nSampling gene-isoform edges per split:')
     train_triples = sample_gene_isoform_pairs(
         gene_to_isoforms, gene_to_idx, protein_to_idx,
         gene_set(train_data), neg_ratio, random_state)
@@ -120,14 +120,28 @@ def prepare_bipartite_splits(df, protein_to_idx, train_data, val_data, test_data
         gene_to_isoforms, gene_to_idx, protein_to_idx,
         gene_set(test_data), neg_ratio, random_state + 2)
 
-    return gene_to_idx, train_triples, val_triples, test_triples
+    n_pos = sum(1 for _, _, l in train_triples if l == 1)
+    n_neg = len(train_triples) - n_pos
+    neg_pos_ratio = n_neg / max(n_pos, 1)
+
+    # True structural ratio: every isoform belongs to exactly 1 gene, so for
+    # each positive (gene, isoform) edge there are (num_genes - 1) true negatives.
+    # We can't enumerate them all (~623M pairs), so we sample neg_ratio per positive.
+    # pos_weight = neg_ratio (sampled ratio) keeps gradient magnitudes balanced.
+    # The true ratio is reported here purely for information.
+    n_pos_edges  = sum(len(isos) for isos in gene_to_isoforms.values())
+    true_ratio   = (len(gene_to_isoforms) * len(protein_to_idx) - n_pos_edges) / max(n_pos_edges, 1)
+    print(f'  Gene-isoform true structural ratio: {true_ratio:.0f}:1  '
+          f'(sampling {neg_ratio}:1 → pos_weight={neg_pos_ratio:.1f})')
+
+    return gene_to_idx, train_triples, val_triples, test_triples, neg_pos_ratio
 
 
 # =============================================================================
 # Dataset
 # =============================================================================
 
-class GeneMembershipDataset(Dataset):
+class GeneIsoformDataset(Dataset):
     """Dataset for gene–isoform membership triples."""
 
     def __init__(self, triples):

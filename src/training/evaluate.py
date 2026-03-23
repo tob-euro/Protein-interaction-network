@@ -3,8 +3,8 @@ import torch
 from sklearn.metrics import roc_auc_score, average_precision_score, f1_score, precision_recall_curve, roc_curve, confusion_matrix
 import matplotlib.pyplot as plt
 
-from src.model_classes.latent_distance_model import LatentDistanceModel, BaselineLDM
-from src.model_classes.multimodal_ldm import MultimodalLDM
+from src.model_classes.ldm import LatentDistanceModel, BaselineLDM
+from src.model_classes.mm_ldm import MultimodalLDM
 
 
 def load_trained_model(model_path, only_re=False, device='cpu'):
@@ -62,8 +62,8 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
 
     auc = roc_auc_score(all_labels, all_preds)
     ap  = average_precision_score(all_labels, all_preds)
-    f1  = f1_score(all_labels, np.array(all_preds) > 0.5)
-    tn, fp, fn, tp = confusion_matrix(all_labels, np.array(all_preds) > 0.5).ravel().tolist()
+    f1  = f1_score(all_labels, np.array(all_preds) > 0)
+    tn, fp, fn, tp = confusion_matrix(all_labels, np.array(all_preds) > 0).ravel().tolist()
     total = tn + fp + fn + tp
 
     print(f"\nEvaluation Results:")
@@ -115,11 +115,15 @@ def load_trained_mm_model(model_path, device='cpu'):
     """
     checkpoint = torch.load(model_path, map_location=device)
 
+    # Restore ESM-C features from the buffer saved inside model_state_dict
+    esmc_features = checkpoint['model_state_dict'].get('esmc_features', None)
+
     model = MultimodalLDM(
         num_proteins    = checkpoint['num_proteins'],
         num_genes       = checkpoint['num_genes'],
         latent_dim      = checkpoint['latent_dim'],
         distance_metric = checkpoint['distance_metric'],
+        esmc_features   = esmc_features,
     )
     model.load_state_dict(checkpoint['model_state_dict'])
     model = model.to(device)
