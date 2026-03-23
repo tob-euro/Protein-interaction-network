@@ -18,7 +18,7 @@ class MultimodalLDM(nn.Module):
 
     Isoform–isoform:  P(Y_ij = 1) = sigmoid(r_i + r_j − β_iso  · d(z_i, z_j))
     Gene–isoform:     P(E_gi = 1) = sigmoid(γ_g        − β_gene · d(u_g, z_i))
-    Gene–gene:        P(C_gh = 1) = sigmoid(γ_g + γ_h  − β_gg   · d(u_g, u_h))
+    Gene–gene:        P(C_gh = 1) = sigmoid(δ_g + δ_h  − β_gg   · d(u_g, u_h))
 
     Isoform latent positions are computed as:
         z_i = esmc_proj(esmc_i) + isoform_residual_i        (if ESM-C features provided)
@@ -82,14 +82,13 @@ class MultimodalLDM(nn.Module):
         nn.init.normal_(self.gene_intercept.weight, mean=0, std=0.1)
 
         # ── Gene–gene (complex co-membership) parameters ─────────────────────
-        # P(C_gh = 1) = sigmoid(γ_g + γ_h − β_complex · d(u_g, u_h))
-        # Reuses the same gene embeddings u_g AND the same gene intercepts γ_g
-        # as the bipartite component — tying the intercept forces a single
-        # per-gene "importance" scalar to satisfy both modalities.
+        # P(C_gh = 1) = sigmoid(δ_g + δ_h − β_complex · d(u_g, u_h))
+        # Reuses the same gene embeddings u_g as the bipartite component —
+        # complex signal shapes gene latent space, which propagates to isoforms
+        # via the bipartite constraint.
         self.beta_complex = nn.Parameter(torch.tensor(1.0))
-        # gene_intercept (γ_g) is reused as the gene-level random effect for
-        # gene–gene interactions — tying the two avoids a redundant parameter
-        # set and forces a single "gene importance" scalar per gene.
+        self.gene_re      = nn.Embedding(num_genes, 1)   # per-gene random effect δ_g
+        nn.init.normal_(self.gene_re.weight, mean=0, std=0.1)
 
     def _isoform_latent(self, protein_idx):
         """Isoform latent position: ESM-C projection + residual, or learned embedding."""
@@ -139,7 +138,7 @@ class MultimodalLDM(nn.Module):
     def forward_complex(self, gene_idx_a, gene_idx_b):
         """
         Gene–gene complex co-membership logits.
-            logit = γ_g + γ_h − β_complex · d(u_g, u_h)
+            logit = δ_g + δ_h − β_complex · d(u_g, u_h)
 
         Uses the same gene embeddings u_g as forward_bipartite.
         Gradients pull co-complex gene embeddings closer together,
@@ -150,8 +149,8 @@ class MultimodalLDM(nn.Module):
         u_g  = self.gene_embeddings(gene_idx_a)
         u_h  = self.gene_embeddings(gene_idx_b)
         dist = self.compute_distance(u_g, u_h)
-        d_g  = self.gene_intercept(gene_idx_a).squeeze(-1)
-        d_h  = self.gene_intercept(gene_idx_b).squeeze(-1)
+        d_g  = self.gene_re(gene_idx_a).squeeze(-1)
+        d_h  = self.gene_re(gene_idx_b).squeeze(-1)
         return d_g + d_h - self.beta_complex * dist
 
     # kept for API compatibility with existing visualize.py / evaluate.py
