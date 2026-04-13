@@ -108,17 +108,21 @@ def prepare_gene_isoform_splits(df, protein_to_idx, train_data, val_data, test_d
         return set(split_df['gene_1']) | set(split_df['gene_2'])
 
     print('\nSampling gene-isoform edges per split:')
+    # train_triples = sample_gene_isoform_pairs(
+    #     gene_to_isoforms, gene_to_idx, protein_to_idx,
+    #     gene_set(train_data), neg_ratio, random_state)
+
+    # val_triples = sample_gene_isoform_pairs(
+    #     gene_to_isoforms, gene_to_idx, protein_to_idx,
+    #     gene_set(val_data), neg_ratio, random_state + 1)
+
+    # test_triples = sample_gene_isoform_pairs(
+    #     gene_to_isoforms, gene_to_idx, protein_to_idx,
+    #     gene_set(test_data), neg_ratio, random_state + 2)
     train_triples = sample_gene_isoform_pairs(
         gene_to_isoforms, gene_to_idx, protein_to_idx,
-        gene_set(train_data), neg_ratio, random_state)
-
-    val_triples = sample_gene_isoform_pairs(
-        gene_to_isoforms, gene_to_idx, protein_to_idx,
-        gene_set(val_data), neg_ratio, random_state + 1)
-
-    test_triples = sample_gene_isoform_pairs(
-        gene_to_isoforms, gene_to_idx, protein_to_idx,
-        gene_set(test_data), neg_ratio, random_state + 2)
+        gene_set(df), neg_ratio, random_state)
+    val_triples, test_triples = [], []
 
     n_pos = sum(1 for _, _, l in train_triples if l == 1)
     n_neg = len(train_triples) - n_pos

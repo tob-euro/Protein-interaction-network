@@ -54,9 +54,19 @@ class MultimodalLDM(nn.Module):
             esmc_dim = esmc_features.shape[1]
 
             # Learned linear projection from ESM-C space to latent space
-            self.esmc_proj = nn.Linear(esmc_dim, latent_dim, bias=True)
-            nn.init.xavier_uniform_(self.esmc_proj.weight)
-            nn.init.zeros_(self.esmc_proj.bias)
+            # replace the single nn.Linear with:
+            self.esmc_proj = nn.Sequential(
+                nn.Linear(esmc_dim, 256, bias=True),
+                nn.ReLU(),
+                nn.Linear(256, latent_dim, bias=True),
+            )
+            nn.init.xavier_uniform_(self.esmc_proj[0].weight)
+            nn.init.zeros_(self.esmc_proj[0].bias)
+            nn.init.xavier_uniform_(self.esmc_proj[2].weight)
+            nn.init.zeros_(self.esmc_proj[2].bias)
+            # self.esmc_proj = nn.Linear(esmc_dim, latent_dim, bias=True)
+            # nn.init.xavier_uniform_(self.esmc_proj.weight)
+            # nn.init.zeros_(self.esmc_proj.bias)
 
             # Small learned residual — init to zero so epoch-0 positions are
             # purely from ESM-C projection; interaction data shifts from there
@@ -265,41 +275,48 @@ class MultimodalTrainer:
         """
         self.model.train()
 
-        n_steps      = max(len(iso_loader), len(gene_loader), len(complex_loader))
+        active_loaders = [iso_loader]
+        if lambda_gene    > 0: active_loaders.append(gene_loader)
+        if lambda_complex > 0: active_loaders.append(complex_loader)
+
+        n_steps      = max(len(l) for l in active_loaders)
         iso_iter     = itertools.cycle(iso_loader)     if len(iso_loader)     < n_steps else iter(iso_loader)
-        gene_iter    = itertools.cycle(gene_loader)    if len(gene_loader)    < n_steps else iter(gene_loader)
-        complex_iter = itertools.cycle(complex_loader) if len(complex_loader) < n_steps else iter(complex_loader)
+        gene_iter    = (itertools.cycle(gene_loader)    if len(gene_loader)    < n_steps else iter(gene_loader))    if lambda_gene    > 0 else None
+        complex_iter = (itertools.cycle(complex_loader) if len(complex_loader) < n_steps else iter(complex_loader)) if lambda_complex > 0 else None
 
         total_iso, total_gene, total_complex = 0.0, 0.0, 0.0
 
         for _ in range(n_steps):
-            p1, p2, iso_labels           = next(iso_iter)
-            gene_idx, prot_idx, g_labels = next(gene_iter)
-            ga, gb, c_labels             = next(complex_iter)
-
+            p1, p2, iso_labels = next(iso_iter)
             p1, p2, iso_labels = p1.to(self.device), p2.to(self.device), iso_labels.to(self.device)
-            gene_idx, prot_idx, g_labels = (gene_idx.to(self.device),
-                                            prot_idx.to(self.device),
-                                            g_labels.to(self.device))
-            ga, gb, c_labels = ga.to(self.device), gb.to(self.device), c_labels.to(self.device)
 
-            iso_logits     = self.model.forward_isoform(p1, p2)
-            gene_logits    = self.model.forward_bipartite(gene_idx, prot_idx)
-            complex_logits = self.model.forward_complex(ga, gb)
+            iso_logits = self.model.forward_isoform(p1, p2)
+            loss_iso   = crit_iso(iso_logits, iso_labels)
+            loss       = lambda_iso * loss_iso
 
-            loss_iso     = crit_iso(iso_logits, iso_labels)
-            loss_gene    = crit_gene(gene_logits, g_labels)
-            loss_complex = crit_complex(complex_logits, c_labels)
+            if gene_iter is not None:
+                gene_idx, prot_idx, g_labels = next(gene_iter)
+                gene_idx, prot_idx, g_labels = (gene_idx.to(self.device),
+                                                prot_idx.to(self.device),
+                                                g_labels.to(self.device))
+                gene_logits = self.model.forward_bipartite(gene_idx, prot_idx)
+                loss_gene   = crit_gene(gene_logits, g_labels)
+                loss        = loss + lambda_gene * loss_gene
+                total_gene += loss_gene.item()
 
-            loss = lambda_iso * loss_iso + lambda_gene * loss_gene + lambda_complex * loss_complex
+            if complex_iter is not None:
+                ga, gb, c_labels = next(complex_iter)
+                ga, gb, c_labels = ga.to(self.device), gb.to(self.device), c_labels.to(self.device)
+                complex_logits = self.model.forward_complex(ga, gb)
+                loss_complex   = crit_complex(complex_logits, c_labels)
+                loss           = loss + lambda_complex * loss_complex
+                total_complex += loss_complex.item()
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-            total_iso     += loss_iso.item()
-            total_gene    += loss_gene.item()
-            total_complex += loss_complex.item()
+            total_iso += loss_iso.item()
 
         return total_iso / n_steps, total_gene / n_steps, total_complex / n_steps
 
@@ -357,8 +374,10 @@ class MultimodalTrainer:
 
         # Correct lambda weights for loaders shorter than iso_loader
         n_iso = len(iso_train_loader)
-        eff_lambda_gene    = lambda_gene    / max(n_iso / max(len(gene_train_loader),    1), 1)
-        eff_lambda_complex = lambda_complex / max(n_iso / max(len(complex_train_loader), 1), 1)
+        n_gene    = len(gene_train_loader)    if (lambda_gene    > 0 and gene_train_loader    is not None) else 0
+        n_complex = len(complex_train_loader) if (lambda_complex > 0 and complex_train_loader is not None) else 0
+        eff_lambda_gene    = lambda_gene    / max(n_iso / max(n_gene,    1), 1) if n_gene    > 0 else 0.0
+        eff_lambda_complex = lambda_complex / max(n_iso / max(n_complex, 1), 1) if n_complex > 0 else 0.0
 
         best_ap, best_state = 0.0, None
 
@@ -366,8 +385,8 @@ class MultimodalTrainer:
         print(f"  λ_iso={lambda_iso}  λ_gene={lambda_gene} (eff={eff_lambda_gene:.4f})"
               f"  λ_complex={lambda_complex} (eff={eff_lambda_complex:.4f})")
         print(f"  pos_weights — iso: {iso_pos_weight}  gene: {gene_pos_weight}  complex: {complex_pos_weight}")
-        print(f"  Steps/epoch: {max(n_iso, len(gene_train_loader), len(complex_train_loader))}"
-              f"  (iso={n_iso}  gene={len(gene_train_loader)}  complex={len(complex_train_loader)})")
+        print(f"  Steps/epoch: {max(n_iso, n_gene, n_complex)}"
+              f"  (iso={n_iso}  gene={n_gene}  complex={n_complex})")
         print(f"  Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         print("-" * 70)
 

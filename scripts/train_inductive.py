@@ -37,7 +37,7 @@ from src.training.evaluate import evaluate_model
 
 def parse_args():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
-    parser.add_argument('--model-type',      type=str,   default='ldm',
+    parser.add_argument('--model-type',      type=str,   default='multimodal',
                         choices=['ldm', 'multimodal'])
     parser.add_argument('--config',          type=str,   default='config/config.yaml')
     parser.add_argument('--data',            type=str,   default=None)
@@ -210,13 +210,13 @@ def main():
             # An unfrozen projection learns a generalising encoder that applies
             # equally to seen and unseen isoforms at inference time.
 
-            gene_to_isoforms = {}
-            if 'df_full' in dir():
-                for g, iso in zip(df_full['gene_1'], df_full['ensp_1']):
-                    gene_to_isoforms.setdefault(g, set()).add(iso)
-                for g, iso in zip(df_full['gene_2'], df_full['ensp_2']):
-                    gene_to_isoforms.setdefault(g, set()).add(iso)
-            model.init_gene_centroids(gene_to_idx, gene_to_isoforms, protein_to_idx)
+            # gene_to_isoforms = {}
+            # if 'df_full' in dir():
+            #     for g, iso in zip(df_full['gene_1'], df_full['ensp_1']):
+            #         gene_to_isoforms.setdefault(g, set()).add(iso)
+            #     for g, iso in zip(df_full['gene_2'], df_full['ensp_2']):
+            #         gene_to_isoforms.setdefault(g, set()).add(iso)
+            # model.init_gene_centroids(gene_to_idx, gene_to_isoforms, protein_to_idx)
         else:
             print(f"  Isoform positions: learned embeddings ({num_proteins:,} × {m['latent_dim']})")
 
@@ -241,7 +241,7 @@ def main():
         best_ap = trainer.train(
             iso_train_loader     = train_loader,
             gene_train_loader    = gene_train_loader,
-            complex_train_loader = complex_train_loader or gene_train_loader,
+            complex_train_loader = complex_train_loader,
             val_loader           = val_loader,
             epochs               = t['epochs'],
             lr                   = t['learning_rate'],
@@ -308,9 +308,9 @@ def main():
             'lambda_complex': args.lambda_complex,
             'esmc_path':      args.esmc or None,
         })
-        ckpt_name = 'multimodal_ldm_inductive.pt'
+        ckpt_name = 'multimodal_ldm.pt'
     else:
-        ckpt_name = 'latent_distance_model_inductive.pt'
+        ckpt_name = 'latent_distance_model.pt'
 
     torch.save(checkpoint, f"{save_dir}/{ckpt_name}")
     print(f"  Saved: {save_dir}/{ckpt_name}")

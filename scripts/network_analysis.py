@@ -153,9 +153,37 @@ def plot_adjacency_matrix(G):
     plt.show()
     print(f"Saved: {FIGURES_DIR}/adjacency_matrix.png")
 
-def dataframe_analysis(df):
+def dataframe_analysis(df, save_path):
     pi = df["pi"].to_numpy()
-    print("pi")
+    mean_pi   = np.mean(pi)
+    median_pi = np.median(pi)
+    min_pi    = np.min(pi)
+    max_pi    = np.max(pi)
+    print(f"  Mean:    {mean_pi:.3f}")
+    print(f"  Median:  {median_pi:.3f}")
+    print(f"  Min:     {min_pi}")
+    print(f"  Max:     {max_pi}")
+
+    pi_neg = pi[pi < 0.5]
+    pi_pos = pi[pi >=  0.5]
+
+    _, ax = plt.subplots(figsize=(10, 5))
+    bins = np.linspace(0, 1, 101)
+    ax.hist(pi_neg, bins=bins, color='steelblue', alpha=0.7, label=f'Negative (pi < 0.5)  n={len(pi_neg):,}')
+    ax.hist(pi_pos, bins=bins, color='tomato',    alpha=0.7, label=f'Positive (pi ≥ 0.5)  n={len(pi_pos):,}')
+    ax.axvline(0.5, color='black', linestyle='--', linewidth=1, label='Threshold (0.5)')
+    ax.set_yscale('log')
+    ax.set_xlabel('Interaction probability (pi)')
+    ax.set_ylabel('Count (log-scaled)')
+    ax.set_title('Distribution of interaction probability (pi)')
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    plt.savefig(f"{FIGURES_DIR}/{save_path}", dpi=300, bbox_inches='tight')
+    plt.show()
+    print(f"Saved: {FIGURES_DIR}/{save_path}")
+
+    
 
 def main(csv_file):
     print("\n" + "="*70)
@@ -163,22 +191,22 @@ def main(csv_file):
     print("="*70 + "\n")
 
     df = load_network(csv_file)
-    dataframe_analysis(df)
+    dataframe_analysis(df, save_path="Pi_distribution.png")
 
-    # G = create_graph(df, use_interactions_only=False)
-    # degrees = analyze_network_statistics(G)
-    # plot_degree_distribution(degrees, save_path="Unipartite_degree_distribution.png")
+    G = create_graph(df, use_interactions_only=False)
+    degrees = analyze_network_statistics(G)
+    plot_degree_distribution(degrees, save_path="Unipartite_degree_distribution.png")
 
-    # find_hub_proteins(G, top_n=20)
-    # G_pos = create_graph(df, use_interactions_only=True)
-    # plot_adjacency_matrix(G_pos)
+    find_hub_proteins(G, top_n=20)
+    G_pos = create_graph(df, use_interactions_only=True)
+    plot_adjacency_matrix(G_pos)
 
-    # print("\n" + "="*70)
-    # print("Bipartite Gene-Isoform Graph Analysis")
-    # print("="*70 + "\n")
+    print("\n" + "="*70)
+    print("Bipartite Gene-Isoform Graph Analysis")
+    print("="*70 + "\n")
 
-    # degrees_bi = analyze_bipartite_network(df)
-    # plot_degree_distribution(degrees_bi, save_path="Bipartite_degree_distribution.png")
+    degrees_bi = analyze_bipartite_network(df)
+    plot_degree_distribution(degrees_bi, save_path="Bipartite_degree_distribution.png")
 
 
 
@@ -186,4 +214,4 @@ def main(csv_file):
 
 
 if __name__ == "__main__":
-    main("data/results_PHYSICAL_Prob_Model_16_02_26_filtered.csv")
+    main("data/results_PHYSICAL_Prob_Model_16_02_26.csv")

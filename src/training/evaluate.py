@@ -62,8 +62,8 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
 
     auc = roc_auc_score(all_labels, all_preds)
     ap  = average_precision_score(all_labels, all_preds)
-    f1  = f1_score(all_labels, np.array(all_preds) > 0)
-    tn, fp, fn, tp = confusion_matrix(all_labels, np.array(all_preds) > 0).ravel().tolist()
+    f1  = f1_score(all_labels, np.array(all_preds) > 0.5)
+    tn, fp, fn, tp = confusion_matrix(all_labels, np.array(all_preds) > 0.5).ravel().tolist()
     total = tn + fp + fn + tp
 
     print(f"\nEvaluation Results:")
@@ -136,3 +136,18 @@ def load_trained_mm_model(model_path, device='cpu'):
     print(f"  λ_iso: {checkpoint['lambda_iso']}  λ_gene: {checkpoint['lambda_gene']}  neg_ratio: {checkpoint['neg_ratio']}")
 
     return model, checkpoint['protein_to_idx'], checkpoint
+
+if __name__ == "__main__":
+    from torch.utils.data import DataLoader
+    from src.data_scripts.isoform_pairs import ProteinInteractionDataset, load_and_prepare_data
+
+    train_dataset, train_data, val_data, test_data, protein_to_idx, num_proteins, neg_pos_ratio = \
+        load_and_prepare_data(
+            "data/results_PHYSICAL_Prob_Model_16_02_26.csv", 0.2, val_size=0.1,
+            random_state=42, alpha=0)
+    model = LatentDistanceModel(58578, 32)
+    test_loader  = DataLoader(ProteinInteractionDataset(test_data, protein_to_idx),
+                              batch_size=512, shuffle=False,
+                              num_workers=4)
+    
+    evaluate_model(model, test_loader)

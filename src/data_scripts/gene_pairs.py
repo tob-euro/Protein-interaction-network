@@ -130,23 +130,25 @@ def prepare_gene_gene_splits(gene_to_idx, train_data, val_data, test_data,
 
     labels = [l for _, _, l in pairs]
 
-    print("\nSplitting gene-gene interaction pairs (stratified by interact label)...")
-    train_val_pairs, test_pairs = train_test_split(
-        pairs, test_size=test_size, stratify=labels, random_state=random_state)
+    # print("\nSplitting gene-gene interaction pairs (stratified by interact label)...")
+    # train_val_pairs, test_pairs = train_test_split(
+    #     pairs, test_size=test_size, stratify=labels, random_state=random_state)
 
-    labels_tv = [l for _, _, l in train_val_pairs]
-    train_pairs, val_pairs = train_test_split(
-        train_val_pairs,
-        test_size=val_size / (1 - test_size),
-        stratify=labels_tv,
-        random_state=random_state,
-    )
+    # labels_tv = [l for _, _, l in train_val_pairs]
+    # train_pairs, val_pairs = train_test_split(
+    #     train_val_pairs,
+    #     test_size=val_size / (1 - test_size),
+    #     stratify=labels_tv,
+    #     random_state=random_state,
+    # )
 
-    for name, split in [('Train', train_pairs), ('Val', val_pairs), ('Test', test_pairs)]:
-        n_pos = sum(1 for _, _, l in split if l == 1)
-        n_neg = len(split) - n_pos
-        print(f"  {name:<6}: {len(split):,} pairs  ({n_pos:,} pos  {n_neg:,} neg  ratio 1:{n_neg/max(n_pos,1):.1f})")
-
+    # for name, split in [('Train', train_pairs), ('Val', val_pairs), ('Test', test_pairs)]:
+    #     n_pos = sum(1 for _, _, l in split if l == 1)
+    #     n_neg = len(split) - n_pos
+    #     print(f"  {name:<6}: {len(split):,} pairs  ({n_pos:,} pos  {n_neg:,} neg  ratio 1:{n_neg/max(n_pos,1):.1f})")
+    train_pairs = pairs
+    val_pairs = []
+    test_pairs = []
     n_pos_train = sum(1 for _, _, l in train_pairs if l == 1)
     n_neg_train = len(train_pairs) - n_pos_train
     neg_pos_ratio = n_neg_train / max(n_pos_train, 1)

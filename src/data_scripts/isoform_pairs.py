@@ -398,8 +398,6 @@ def diagnose_split_inductive(train_data, val_data, test_data,
         if len(pos) == 0:
             print(f"  {name}: no positives")
             continue
-        import itertools
-        from collections import Counter
         deg = Counter(itertools.chain(pos['ensp_1'], pos['ensp_2']))
         d   = list(deg.values())
         print(f"  {name:<6}: {len(pos):,} pos edges | {len(deg):,} isoforms | "
