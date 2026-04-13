@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
+from sklearn.metrics import roc_auc_score, average_precision_score
 from scipy.stats import spearmanr
 
 
@@ -16,27 +16,20 @@ class LatentDistanceModel(nn.Module):
     Parameters:
         num_proteins:    number of proteins in the network
         latent_dim:      latent space dimensionality (e.g. 16, 32, 64, 128)
-        distance_metric: 'euclidean' or 'cosine'
     """
 
-    def __init__(self, num_proteins, latent_dim=32, distance_metric='euclidean'):
+    def __init__(self, num_proteins, latent_dim=32):
         super(LatentDistanceModel, self).__init__()
 
-        self.embeddings = nn.Embedding(num_proteins, latent_dim)
+        self.embeddings     = nn.Embedding(num_proteins, latent_dim)
         self.random_effects = nn.Embedding(num_proteins, 1)
-        self.beta = nn.Parameter(torch.tensor(1.0))
-
-        self.distance_metric = distance_metric
+        self.beta           = nn.Parameter(torch.tensor(1.0))
 
         nn.init.normal_(self.random_effects.weight, mean=0, std=0.1)
         nn.init.normal_(self.embeddings.weight, mean=0, std=0.1)
 
     def compute_distance(self, z1, z2):
-        if self.distance_metric == 'euclidean':
-            return torch.norm(z1 - z2, p=2, dim=1)
-        elif self.distance_metric == 'cosine':
-            return 1 - torch.nn.functional.cosine_similarity(z1, z2, dim=1)
-        raise ValueError(f"Unknown distance metric: {self.distance_metric}")
+        return torch.norm(z1 - z2, p=2, dim=1)
 
     def forward(self, protein1_idx, protein2_idx):
         z1 = self.embeddings(protein1_idx)
@@ -65,8 +58,8 @@ class BaselineLDM(LatentDistanceModel):
     latent distance term contributes beyond node-level popularity effects.
     """
 
-    def __init__(self, num_proteins, latent_dim=32, distance_metric='euclidean'):
-        super().__init__(num_proteins, latent_dim, distance_metric)
+    def __init__(self, num_proteins, latent_dim=32):
+        super().__init__(num_proteins, latent_dim)
 
     def forward(self, protein1_idx, protein2_idx):
         r1 = self.random_effects(protein1_idx).squeeze(-1)
@@ -81,10 +74,9 @@ class LatentDistanceTrainer:
         self.model = model.to(device)
         self.device = device
         self.train_losses = []
-        self.val_losses = []
-        self.val_aucs = []
-        self.val_aps = []
-        self.val_f1s = []
+        self.val_losses   = []
+        self.val_aucs     = []
+        self.val_aps      = []
 
     def train_epoch(self, dataloader, optimizer, criterion):
         self.model.train()
@@ -92,9 +84,9 @@ class LatentDistanceTrainer:
         for protein1_idx, protein2_idx, labels in dataloader:
             protein1_idx = protein1_idx.to(self.device)
             protein2_idx = protein2_idx.to(self.device)
-            labels = labels.to(self.device)
-            predictions = self.model(protein1_idx, protein2_idx)
-            loss = criterion(predictions, labels)
+            labels       = labels.to(self.device)
+            predictions  = self.model(protein1_idx, protein2_idx)
+            loss         = criterion(predictions, labels)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -109,59 +101,64 @@ class LatentDistanceTrainer:
             for protein1_idx, protein2_idx, labels in dataloader:
                 protein1_idx = protein1_idx.to(self.device)
                 protein2_idx = protein2_idx.to(self.device)
-                labels = labels.to(self.device)
-                predictions = self.model(protein1_idx, protein2_idx)
-                loss = criterion(predictions, labels)
-                total_loss += loss.item()
+                labels       = labels.to(self.device)
+                predictions  = self.model(protein1_idx, protein2_idx)
+                loss         = criterion(predictions, labels)
+                total_loss  += loss.item()
                 all_preds.extend(predictions.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
         avg_loss = total_loss / len(dataloader)
         auc = roc_auc_score(all_labels, all_preds)
-        ap = average_precision_score(all_labels, all_preds)
-        f1 = f1_score(all_labels, np.array(all_preds) > 0.5)
-        return avg_loss, auc, ap, f1, all_preds, all_labels
+        ap  = average_precision_score(all_labels, all_preds)
+        return avg_loss, auc, ap, all_preds, all_labels
 
-    def train(self, train_loader, val_loader, epochs=10, lr=0.001, weight_decay=1e-5, pos_weight=222.2):
+    def train(self, train_loader, val_loader, epochs=10, lr=0.001,
+              weight_decay=1e-5, pos_weight=222.2, patience=10):
         """
         Full training loop.
 
         Args:
             pos_weight: weight applied to positive class in BCEWithLogitsLoss.
                         Set to approx. (num_negatives / num_positives) to handle class imbalance.
+            patience:   epochs without val AP improvement before early stopping.
         """
-        criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, dtype=torch.float32).to(self.device))
+        criterion = nn.BCEWithLogitsLoss(
+            pos_weight=torch.tensor(pos_weight, dtype=torch.float32).to(self.device))
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
 
-        best_ap = 0
+        best_ap          = 0
+        best_epoch       = 0
         best_model_state = None
 
         print(f"Training on {self.device}")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"Early stopping patience: {patience}")
         print("-" * 60)
 
         for epoch in range(epochs):
-            if hasattr(train_loader.dataset, '_resample'):
-                train_loader.dataset._resample()
-
-            train_loss = self.train_epoch(train_loader, optimizer, criterion)
-            val_loss, val_auc, val_ap, val_f1, _, _ = self.validate(val_loader, criterion)
+            train_loss              = self.train_epoch(train_loader, optimizer, criterion)
+            val_loss, val_auc, val_ap, _, _ = self.validate(val_loader, criterion)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
             self.val_aucs.append(val_auc)
             self.val_aps.append(val_ap)
-            self.val_f1s.append(val_f1)
 
             scheduler.step(val_ap)
 
             if val_ap > best_ap:
-                best_ap = val_ap
+                best_ap          = val_ap
+                best_epoch       = epoch
                 best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
 
             print(f"Epoch {epoch+1}/{epochs}  "
                   f"loss {train_loss:.4f}/{val_loss:.4f}  "
-                  f"AUC {val_auc:.4f}  AP {val_ap:.4f}  F1 {val_f1:.4f}")
+                  f"AUC {val_auc:.4f}  AP {val_ap:.4f}")
+
+            if epoch - best_epoch >= patience:
+                print(f"  Early stopping (no improvement for {patience} epochs)")
+                break
 
         self.model.load_state_dict(best_model_state)
         print(f"\nBest validation AP: {best_ap:.4f}")
@@ -170,21 +167,21 @@ class LatentDistanceTrainer:
     def plot_training(self):
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
         axes[0].plot(self.train_losses, label='Train Loss')
-        axes[0].plot(self.val_losses, label='Val Loss')
+        axes[0].plot(self.val_losses,   label='Val Loss')
         axes[0].set_xlabel('Epoch')
         axes[0].set_ylabel('Loss')
         axes[0].set_title('Training and Validation Loss')
         axes[0].legend()
         axes[0].grid(True)
         axes[1].plot(self.val_aucs, label='Val AUC', color='green')
-        axes[1].plot(self.val_aps, label='Val AP', color='red')
-        axes[1].plot(self.val_f1s, label='Val F1', color='blue')
+        axes[1].plot(self.val_aps,  label='Val AP',  color='red')
         axes[1].set_xlabel('Epoch')
         axes[1].set_title('Validation Metrics')
         axes[1].legend()
         axes[1].grid(True)
         plt.tight_layout()
         return fig
+
 
 class WeightedLatentDistanceTrainer(LatentDistanceTrainer):
     """
@@ -196,28 +193,19 @@ class WeightedLatentDistanceTrainer(LatentDistanceTrainer):
     Weight scheme:
         - interact == 0: base_neg_weight (default 1.0)
         - interact == 1: pos_weight_scale * pi  (linearly scaled by interaction strength)
-
-    This means a pair with pi=1.0 gets full pos_weight_scale,
-    a pair with pi=0.5 gets half, and negatives get base_neg_weight.
     """
 
     def __init__(self, model, device='cuda', pos_weight_scale=10.0, base_neg_weight=1.0):
         super().__init__(model, device)
         self.pos_weight_scale = pos_weight_scale
-        self.base_neg_weight = base_neg_weight
+        self.base_neg_weight  = base_neg_weight
 
     def _compute_sample_weights(self, labels, pi_values):
-        """
-        Compute per-sample loss weights.
-        Negatives (interact=0) get base_neg_weight.
-        Positives (interact=1) get pos_weight_scale * pi.
-        """
-        weights = torch.where(
+        return torch.where(
             labels == 0,
             torch.full_like(pi_values, self.base_neg_weight),
-            self.pos_weight_scale * pi_values
+            self.pos_weight_scale * pi_values,
         )
-        return weights
 
     def train_epoch(self, dataloader, optimizer, criterion):
         self.model.train()
@@ -229,11 +217,8 @@ class WeightedLatentDistanceTrainer(LatentDistanceTrainer):
             pi_values    = pi_values.to(self.device)
 
             predictions = self.model(protein1_idx, protein2_idx)
-
-            # BCEWithLogitsLoss with pi as soft targets and per-sample weights
-            weights = self._compute_sample_weights(labels, pi_values)
-            loss = criterion(predictions, pi_values)          # pi as target, not binary label
-            loss = (loss * weights).mean()
+            weights     = self._compute_sample_weights(labels, pi_values)
+            loss        = (criterion(predictions, pi_values) * weights).mean()
 
             optimizer.zero_grad()
             loss.backward()
@@ -253,10 +238,8 @@ class WeightedLatentDistanceTrainer(LatentDistanceTrainer):
                 pi_values    = pi_values.to(self.device)
 
                 predictions = self.model(protein1_idx, protein2_idx)
-
-                weights = self._compute_sample_weights(labels, pi_values)
-                loss = criterion(predictions, pi_values)
-                loss = (loss * weights).mean()
+                weights     = self._compute_sample_weights(labels, pi_values)
+                loss        = (criterion(predictions, pi_values) * weights).mean()
                 total_loss += loss.item()
 
                 all_preds.extend(predictions.cpu().numpy())
@@ -264,61 +247,60 @@ class WeightedLatentDistanceTrainer(LatentDistanceTrainer):
                 all_labels.extend(labels.cpu().numpy())
 
         avg_loss = total_loss / len(dataloader)
-
-        # Binary metrics: use interact label with raw logit predictions
         auc = roc_auc_score(all_labels, all_preds)
         ap  = average_precision_score(all_labels, all_preds)
-        f1  = f1_score(all_labels, np.array(all_preds) > 0.5)
 
-        # Continuous metrics: on positives only (pi=0 negatives are uninformative for correlation)
         all_preds  = np.array(all_preds)
         all_pi     = np.array(all_pi)
         all_labels = np.array(all_labels)
         pos_mask   = all_labels == 1
-        if pos_mask.sum() > 1:
-            spearman_r, _ = spearmanr(all_preds[pos_mask], all_pi[pos_mask])
-        else:
-            spearman_r = float('nan')
+        spearman_r = spearmanr(all_preds[pos_mask], all_pi[pos_mask])[0] if pos_mask.sum() > 1 else float('nan')
 
-        return avg_loss, auc, ap, f1, spearman_r, all_preds, all_labels
+        return avg_loss, auc, ap, spearman_r, all_preds, all_labels
 
-    def train(self, train_loader, val_loader, epochs=10, lr=0.001, weight_decay=1e-5, pos_weight=10.0):
+    def train(self, train_loader, val_loader, epochs=10, lr=0.001,
+              weight_decay=1e-5, pos_weight=10.0, patience=10):
         """
         BCEWithLogitsLoss with reduction='none' so we can apply per-sample weights manually.
-        pos_weight is dropped here — class imbalance is handled via pos_weight_scale * pi instead.
+        pos_weight is unused here — imbalance is handled via pos_weight_scale * pi.
         """
         criterion = nn.BCEWithLogitsLoss(reduction='none')
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
 
-        best_auc = 0
+        best_auc         = 0
+        best_epoch       = 0
         best_model_state = None
 
         print(f"Training on {self.device}")
         print(f"Model parameters: {sum(p.numel() for p in self.model.parameters()):,}")
         print(f"pos_weight_scale: {self.pos_weight_scale} | base_neg_weight: {self.base_neg_weight}")
+        print(f"Early stopping patience: {patience}")
         print("-" * 60)
 
         for epoch in range(epochs):
-            train_loss = self.train_epoch(train_loader, optimizer, criterion)
-            val_loss, val_auc, val_ap, val_f1, spearman_r, _, _ = self.validate(val_loader, criterion)
+            train_loss                           = self.train_epoch(train_loader, optimizer, criterion)
+            val_loss, val_auc, val_ap, spearman_r, _, _ = self.validate(val_loader, criterion)
 
             self.train_losses.append(train_loss)
             self.val_losses.append(val_loss)
             self.val_aucs.append(val_auc)
             self.val_aps.append(val_ap)
-            self.val_f1s.append(val_f1)
 
             scheduler.step(val_auc)
 
             if val_auc > best_auc:
-                best_auc = val_auc
+                best_auc         = val_auc
+                best_epoch       = epoch
                 best_model_state = {k: v.clone() for k, v in self.model.state_dict().items()}
 
             print(f"Epoch {epoch+1}/{epochs}  "
                   f"loss {train_loss:.4f}/{val_loss:.4f}  "
-                  f"AUC {val_auc:.4f}  AP {val_ap:.4f}  "
-                  f"F1 {val_f1:.4f}  Spearman(pos) {spearman_r:.4f}")
+                  f"AUC {val_auc:.4f}  AP {val_ap:.4f}  Spearman(pos) {spearman_r:.4f}")
+
+            if epoch - best_epoch >= patience:
+                print(f"  Early stopping (no improvement for {patience} epochs)")
+                break
 
         self.model.load_state_dict(best_model_state)
         print(f"\nBest validation AUC: {best_auc:.4f}")

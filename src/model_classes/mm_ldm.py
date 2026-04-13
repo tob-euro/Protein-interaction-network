@@ -1,11 +1,33 @@
 import itertools
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.metrics import roc_auc_score, average_precision_score, f1_score
+from sklearn.metrics import roc_auc_score, average_precision_score
+
+
+# =============================================================================
+# Shared MLP building block
+# =============================================================================
+
+class ProjectionMLP(nn.Module):
+    """Two-layer MLP: in_dim → hidden_dim (ReLU) → out_dim."""
+
+    def __init__(self, in_dim, hidden_dim, out_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(in_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, out_dim),
+        )
+        nn.init.xavier_uniform_(self.net[0].weight)
+        nn.init.zeros_(self.net[0].bias)
+        nn.init.xavier_uniform_(self.net[2].weight)
+        nn.init.zeros_(self.net[2].bias)
+
+    def forward(self, x):
+        return self.net(x)
 
 
 # =============================================================================
@@ -20,146 +42,127 @@ class MultimodalLDM(nn.Module):
     Gene–isoform:     P(E_gi = 1) = sigmoid(γ_g        − β_gene · d(u_g, z_i))
     Gene–gene:        P(C_gh = 1) = sigmoid(δ_g + δ_h  − β_gg   · d(u_g, u_h))
 
-    Isoform latent positions are computed as:
-        z_i = esmc_proj(esmc_i) + isoform_residual_i        (if ESM-C features provided)
-        z_i = isoform_embeddings_i                           (fallback, no features)
+    Isoform latent positions (use_residuals=False, inductive):
+        z_i = esmc_proj(esmc_i)                          purely ESM-C driven
+    Isoform latent positions (use_residuals=True, transductive):
+        z_i = esmc_proj(esmc_i) + isoform_residual_i    ESM-C + per-isoform correction
+    Fallback (no ESM-C):
+        z_i = isoform_embeddings_i
 
-    The ESM-C projection provides a biologically-informed prior (sequence/structure
-    similarity maps to proximity in latent space). The learned residual lets
-    interaction data shift proteins from that prior. The residual is initialised to
-    zero so training starts entirely from the ESM-C prior.
+    Isoform random effects (interaction propensity):
+        r_i = re_head(esmc_i) [+ re_residual_i]   (ESM-C mode, residual optional)
+        r_i = random_effects_i                      (fallback — transductive only)
 
     Parameters:
-        num_proteins:    number of unique isoforms/proteins in the network
-        num_genes:       number of unique canonical genes
-        latent_dim:      latent space dimensionality (e.g. 16, 32, 64, 128)
-        distance_metric: 'euclidean' or 'cosine'
-        esmc_features:   float32 tensor of shape (num_proteins, esmc_dim) — the
-                         precomputed ESM-C global embeddings, one row per protein
-                         in protein_to_idx order. If None, falls back to a learned
-                         embedding table (no sequence prior).
+        num_proteins:   number of unique isoforms/proteins in the network
+        num_genes:      number of unique canonical genes
+        latent_dim:     latent space dimensionality (e.g. 16, 32, 64, 128)
+        esmc_features:  float32 tensor of shape (num_proteins, esmc_dim). If None,
+                          falls back to learned embedding tables (no inductive capacity).
+        use_residuals:  if True, add per-isoform correction embeddings on top of
+                          the ESM-C projection. Set False in inductive mode to prevent
+                          per-isoform memorization of seen training pairs.
     """
 
-    def __init__(self, num_proteins, num_genes, latent_dim=32, distance_metric='euclidean',
-                 esmc_features=None):
+    def __init__(self, num_proteins, num_genes, latent_dim=32,
+                 esmc_features=None, use_residuals=True):
         super().__init__()
 
-        self.distance_metric = distance_metric
-        self.use_esmc        = esmc_features is not None
+        self.use_esmc      = esmc_features is not None
+        self.use_residuals = use_residuals
 
         if self.use_esmc:
-            # ── ESM-C feature encoder ─────────────────────────────────────────
-            # Fixed feature matrix — moved to device automatically via register_buffer
             self.register_buffer('esmc_features', esmc_features.float())
             esmc_dim = esmc_features.shape[1]
 
-            # Learned linear projection from ESM-C space to latent space
-            self.esmc_proj = nn.Linear(esmc_dim, latent_dim, bias=True)
-            nn.init.xavier_uniform_(self.esmc_proj.weight)
-            nn.init.zeros_(self.esmc_proj.bias)
+            # ESM-C projection: maps sequence embeddings to latent positions
+            self.esmc_proj = ProjectionMLP(esmc_dim, 256, latent_dim)
 
-            # Small learned residual — init to zero so epoch-0 positions are
-            # purely from ESM-C projection; interaction data shifts from there
-            self.isoform_residual = nn.Embedding(num_proteins, latent_dim)
-            nn.init.zeros_(self.isoform_residual.weight)
+            # Random effect head: predicts propensity from ESM-C features
+            self.re_head = ProjectionMLP(esmc_dim, 128, 1)
+
+            if self.use_residuals:
+                # Per-isoform corrections on top of the ESM-C projection.
+                # Only used in transductive mode — in inductive mode these
+                # would memorize seen isoforms without benefiting unseen ones.
+                self.isoform_residual = nn.Embedding(num_proteins, latent_dim)
+                nn.init.zeros_(self.isoform_residual.weight)
+                self.re_residual = nn.Embedding(num_proteins, 1)
+                nn.init.zeros_(self.re_residual.weight)
         else:
-            # ── Fallback: fully learned embedding table ───────────────────────
+            # Fallback: fully learned embedding table (transductive only)
             self.isoform_embeddings = nn.Embedding(num_proteins, latent_dim)
             nn.init.normal_(self.isoform_embeddings.weight, mean=0, std=0.1)
 
-        # ── Gene latent space (bipartite component) ───────────────────────────
+            self.random_effects = nn.Embedding(num_proteins, 1)
+            nn.init.normal_(self.random_effects.weight, mean=0, std=0.1)
+
+        # ── Gene latent space ─────────────────────────────────────────────────
         self.gene_embeddings = nn.Embedding(num_genes, latent_dim)
         nn.init.normal_(self.gene_embeddings.weight, mean=0, std=0.1)
 
         # ── Isoform–isoform parameters ────────────────────────────────────────
-        self.beta_iso     = nn.Parameter(torch.tensor(1.0))   # distance weight
-        self.random_effects = nn.Embedding(num_proteins, 1)   # per-isoform random effects r_i
-        nn.init.normal_(self.random_effects.weight, mean=0, std=0.1)
+        self.beta_iso = nn.Parameter(torch.tensor(1.0))
 
         # ── Gene–isoform (bipartite) parameters ──────────────────────────────
-        self.beta_gene      = nn.Parameter(torch.tensor(1.0))  # distance weight
-        self.gene_intercept = nn.Embedding(num_genes, 1)       # per-gene popularity γ_g
+        self.beta_gene      = nn.Parameter(torch.tensor(1.0))
+        self.gene_intercept = nn.Embedding(num_genes, 1)
         nn.init.normal_(self.gene_intercept.weight, mean=0, std=0.1)
 
         # ── Gene–gene (complex co-membership) parameters ─────────────────────
-        # P(C_gh = 1) = sigmoid(δ_g + δ_h − β_complex · d(u_g, u_h))
-        # Reuses the same gene embeddings u_g as the bipartite component —
-        # complex signal shapes gene latent space, which propagates to isoforms
-        # via the bipartite constraint.
         self.beta_complex = nn.Parameter(torch.tensor(1.0))
-        self.gene_re      = nn.Embedding(num_genes, 1)   # per-gene random effect δ_g
+        self.gene_re      = nn.Embedding(num_genes, 1)
         nn.init.normal_(self.gene_re.weight, mean=0, std=0.1)
 
     def _isoform_latent(self, protein_idx):
-        """Isoform latent position: ESM-C projection + residual, or learned embedding."""
+        """Isoform latent position: ESM-C projection (+ optional residual), or learned embedding."""
         if self.use_esmc:
-            features = self.esmc_features[protein_idx]        # (batch, esmc_dim)
-            return self.esmc_proj(features) + self.isoform_residual(protein_idx)
+            z = self.esmc_proj(self.esmc_features[protein_idx])
+            if self.use_residuals:
+                z = z + self.isoform_residual(protein_idx)
+            return z
         return self.isoform_embeddings(protein_idx)
 
+    def _random_effect(self, protein_idx):
+        """Per-isoform interaction propensity r_i."""
+        if self.use_esmc:
+            r = self.re_head(self.esmc_features[protein_idx]).squeeze(-1)
+            if self.use_residuals:
+                r = r + self.re_residual(protein_idx).squeeze(-1)
+            return r
+        return self.random_effects(protein_idx).squeeze(-1)
+
     def compute_distance(self, z1, z2):
-        if self.distance_metric == 'euclidean':
-            return torch.norm(z1 - z2, p=2, dim=1)
-        elif self.distance_metric == 'cosine':
-            return 1.0 - F.cosine_similarity(z1, z2, dim=1)
-        raise ValueError(f"Unknown distance metric: {self.distance_metric}")
+        return torch.norm(z1 - z2, p=2, dim=1)
 
     def forward_isoform(self, protein1_idx, protein2_idx):
-        """
-        Isoform–isoform interaction logits.
-        Identical in form to the base LDM forward pass.
-
-        Returns: logits of shape (batch,)
-        """
-        z1 = self._isoform_latent(protein1_idx)
-        z2 = self._isoform_latent(protein2_idx)
+        z1   = self._isoform_latent(protein1_idx)
+        z2   = self._isoform_latent(protein2_idx)
         dist = self.compute_distance(z1, z2)
-
-        r1 = self.random_effects(protein1_idx).squeeze(-1)
-        r2 = self.random_effects(protein2_idx).squeeze(-1)
-        return r1 + r2 - self.beta_iso * dist
+        r1   = self._random_effect(protein1_idx)
+        r2   = self._random_effect(protein2_idx)
+        return r1 + r2 - nn.functional.softplus(self.beta_iso) * dist
 
     def forward_bipartite(self, gene_idx, protein_idx):
-        """
-        Gene–isoform membership logits.
-            logit = γ_g  −  β_gene · d(u_g, z_i)
-
-        z_i is the *shared* isoform embedding — gradients here feed
-        directly back into the isoform–isoform likelihood during training.
-
-        Returns: logits of shape (batch,)
-        """
-        u_g = self.gene_embeddings(gene_idx)
-        z_i = self._isoform_latent(protein_idx)              # shared!
-        dist = self.compute_distance(u_g, z_i)
+        u_g     = self.gene_embeddings(gene_idx)
+        z_i     = self._isoform_latent(protein_idx)
+        dist    = self.compute_distance(u_g, z_i)
         gamma_g = self.gene_intercept(gene_idx).squeeze(-1)
-        return gamma_g - self.beta_gene * dist
+        return gamma_g - nn.functional.softplus(self.beta_gene) * dist
 
     def forward_complex(self, gene_idx_a, gene_idx_b):
-        """
-        Gene–gene complex co-membership logits.
-            logit = δ_g + δ_h − β_complex · d(u_g, u_h)
-
-        Uses the same gene embeddings u_g as forward_bipartite.
-        Gradients pull co-complex gene embeddings closer together,
-        which then propagates to their isoforms via the bipartite constraint.
-
-        Returns: logits of shape (batch,)
-        """
         u_g  = self.gene_embeddings(gene_idx_a)
         u_h  = self.gene_embeddings(gene_idx_b)
         dist = self.compute_distance(u_g, u_h)
         d_g  = self.gene_re(gene_idx_a).squeeze(-1)
         d_h  = self.gene_re(gene_idx_b).squeeze(-1)
-        return d_g + d_h - self.beta_complex * dist
+        return d_g + d_h - nn.functional.softplus(self.beta_complex) * dist
 
-    # kept for API compatibility with existing visualize.py / evaluate.py
+    # API compatibility with evaluate.py / visualize.py
     def forward(self, protein1_idx, protein2_idx):
-        """Alias for forward_isoform so existing evaluate / visualize code works."""
         return self.forward_isoform(protein1_idx, protein2_idx)
 
     def get_embeddings(self):
-        """Isoform latent positions — alias used by pca.py / hierarchical_clustering.py."""
         return self.get_isoform_embeddings()
 
     def get_isoform_embeddings(self):
@@ -173,19 +176,20 @@ class MultimodalLDM(nn.Module):
         return self.gene_embeddings.weight.detach().cpu().numpy()
 
     def get_random_effects(self):
+        if self.use_esmc:
+            with torch.no_grad():
+                all_idx = torch.arange(self.esmc_features.shape[0], device=self.esmc_features.device)
+                return self._random_effect(all_idx).unsqueeze(-1).cpu().numpy()
         return self.random_effects.weight.detach().cpu().numpy()
 
     @torch.no_grad()
     def init_gene_centroids(self, gene_to_idx, gene_to_isoforms, protein_to_idx):
         """
         Initialize each gene embedding at the mean projected position of its
-        isoforms so the gene–isoform distance signal is immediately
-        discriminative.
+        isoforms so the gene–isoform distance signal is immediately discriminative.
 
-        Args:
-            gene_to_idx:      dict {gene_id: gene_index}
-            gene_to_isoforms: dict {gene_id: set of isoform_ids}
-            protein_to_idx:   dict {isoform_id: protein_index}
+        Only pass isoforms from the training split to avoid leaking position
+        information for held-out isoforms in inductive mode.
         """
         device = self.gene_embeddings.weight.device
         n_iso  = (self.esmc_features.shape[0] if self.use_esmc
@@ -216,20 +220,6 @@ class MultimodalLDM(nn.Module):
 
         print(f"  Gene centroids initialized: {n_init:,} / {len(gene_to_idx):,} genes")
 
-    def freeze_projection(self):
-        """
-        Freeze the ESM-C projection so isoform base positions are fixed.
-
-        This converts z_i = FIXED_PRIOR[i] + learnable_residual[i],
-        making the training dynamics identical to the learned-embedding
-        architecture (local, sparse updates only) while retaining the
-        biologically-informed initialization from ESM-C features.
-        """
-        if self.use_esmc:
-            for p in self.esmc_proj.parameters():
-                p.requires_grad = False
-            n_frozen = sum(p.numel() for p in self.esmc_proj.parameters())
-            print(f"  Froze esmc_proj: {n_frozen:,} parameters")
 
 
 # =============================================================================
@@ -243,29 +233,28 @@ class MultimodalTrainer:
         self.model  = model.to(device)
         self.device = device
 
-        # Logged per epoch
         self.train_iso_losses     = []
         self.train_gene_losses    = []
         self.train_complex_losses = []
         self.val_losses           = []
         self.val_aucs             = []
         self.val_aps              = []
-        self.val_f1s              = []
 
     def train_epoch(self, iso_loader, gene_loader, complex_loader,
                     optimizer, crit_iso, crit_gene, crit_complex,
                     lambda_iso, lambda_gene, lambda_complex):
-        """
-        One epoch of joint training over all three modalities.
-
-        All loaders are cycled to the length of the longest one so every
-        batch from every loader is seen each epoch. A single backward pass
-        per step gives all shared parameters (gene embeddings u_g) a
-        coherent gradient from all three tasks simultaneously.
-        """
         self.model.train()
 
-        n_steps      = max(len(iso_loader), len(gene_loader), len(complex_loader))
+        n_steps = max(len(iso_loader), len(gene_loader), len(complex_loader))
+
+        # Cycle shorter loaders to match the longest so no signal is discarded.
+        # Scale each modality's lambda down by its cycling factor so each unique
+        # sample contributes equal total gradient weight per epoch regardless of
+        # dataset size.
+        eff_lambda_iso     = lambda_iso     / (n_steps / len(iso_loader))
+        eff_lambda_gene    = lambda_gene    / (n_steps / len(gene_loader))
+        eff_lambda_complex = lambda_complex / (n_steps / len(complex_loader))
+
         iso_iter     = itertools.cycle(iso_loader)     if len(iso_loader)     < n_steps else iter(iso_loader)
         gene_iter    = itertools.cycle(gene_loader)    if len(gene_loader)    < n_steps else iter(gene_loader)
         complex_iter = itertools.cycle(complex_loader) if len(complex_loader) < n_steps else iter(complex_loader)
@@ -291,7 +280,7 @@ class MultimodalTrainer:
             loss_gene    = crit_gene(gene_logits, g_labels)
             loss_complex = crit_complex(complex_logits, c_labels)
 
-            loss = lambda_iso * loss_iso + lambda_gene * loss_gene + lambda_complex * loss_complex
+            loss = eff_lambda_iso * loss_iso + eff_lambda_gene * loss_gene + eff_lambda_complex * loss_complex
 
             optimizer.zero_grad()
             loss.backward()
@@ -304,6 +293,7 @@ class MultimodalTrainer:
         return total_iso / n_steps, total_gene / n_steps, total_complex / n_steps
 
     def validate(self, val_loader, criterion):
+        """Validate on isoform–isoform pairs. Returns loss, AUC, AP."""
         self.model.eval()
         total_loss, all_preds, all_labels = 0.0, [], []
         with torch.no_grad():
@@ -318,8 +308,7 @@ class MultimodalTrainer:
         preds_arr = np.array(all_preds)
         auc = roc_auc_score(all_labels, preds_arr)
         ap  = average_precision_score(all_labels, preds_arr)
-        f1  = f1_score(all_labels, preds_arr > 0.5)
-        return avg_loss, auc, ap, f1, all_preds, all_labels
+        return avg_loss, auc, ap
 
     def train(
         self,
@@ -336,48 +325,51 @@ class MultimodalTrainer:
         lambda_gene=0.5,
         complex_pos_weight=5.0,
         lambda_complex=0.3,
+        patience=10,
     ):
         """
         Full three-modality training loop.
 
+        Gene-isoform and gene-gene data are always fully used for training (no
+        val/test split) — they are annotation/prior data, not experimental targets.
+        Validation is isoform-isoform only, which is the actual prediction task.
+
         Args:
-            iso_pos_weight:     BCE pos_weight for isoform–isoform loss (~neg/pos ratio)
-            lambda_iso:         Weight for L_isoform in combined loss
-            gene_pos_weight:    BCE pos_weight for gene–isoform loss (= neg_ratio)
-            lambda_gene:        Weight for L_bipartite in combined loss
-            complex_pos_weight: BCE pos_weight for complex co-membership loss (= neg_ratio)
-            lambda_complex:     Weight for L_complex in combined loss
+            patience: epochs without iso val AP improvement before early stopping.
         """
         crit_iso     = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(iso_pos_weight,     dtype=torch.float32).to(self.device))
         crit_gene    = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(gene_pos_weight,    dtype=torch.float32).to(self.device))
         crit_complex = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(complex_pos_weight, dtype=torch.float32).to(self.device))
 
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
 
-        # Correct lambda weights for loaders shorter than iso_loader
-        n_iso = len(iso_train_loader)
-        eff_lambda_gene    = lambda_gene    / max(n_iso / max(len(gene_train_loader),    1), 1)
-        eff_lambda_complex = lambda_complex / max(n_iso / max(len(complex_train_loader), 1), 1)
+        best_ap, best_epoch, best_state = 0.0, 0, None
 
-        best_ap, best_state = 0.0, None
+        n_iso     = len(iso_train_loader)
+        n_gene    = len(gene_train_loader)
+        n_complex = len(complex_train_loader)
+        n_steps   = max(n_iso, n_gene, n_complex)
 
         print(f"Training MultimodalLDM (3 modalities) on {self.device}")
-        print(f"  λ_iso={lambda_iso}  λ_gene={lambda_gene} (eff={eff_lambda_gene:.4f})"
-              f"  λ_complex={lambda_complex} (eff={eff_lambda_complex:.4f})")
-        print(f"  pos_weights — iso: {iso_pos_weight}  gene: {gene_pos_weight}  complex: {complex_pos_weight}")
-        print(f"  Steps/epoch: {max(n_iso, len(gene_train_loader), len(complex_train_loader))}"
-              f"  (iso={n_iso}  gene={len(gene_train_loader)}  complex={len(complex_train_loader)})")
-        print(f"  Parameters: {sum(p.numel() for p in self.model.parameters()):,}")
+        print(f"  λ_iso={lambda_iso}  λ_gene={lambda_gene}  λ_complex={lambda_complex}")
+        print(f"  pos_weights — iso: {iso_pos_weight:.2f}  gene: {gene_pos_weight:.2f}  complex: {complex_pos_weight:.2f}")
+        print(f"  Steps/epoch: {n_steps}  (iso={n_iso}  gene={n_gene}  complex={n_complex}  → max, shorter loaders cycle)")
+        print(f"  Effective λ — iso: {lambda_iso:.3f}  "
+              f"gene: {lambda_gene / (n_steps/n_gene):.3f}  "
+              f"complex: {lambda_complex / (n_steps/n_complex):.3f}  (scaled by cycling factor)")
+        print(f"  Early stopping patience: {patience}")
         print("-" * 70)
 
         for epoch in range(epochs):
             iso_loss, gene_loss, complex_loss = self.train_epoch(
                 iso_train_loader, gene_train_loader, complex_train_loader,
                 optimizer, crit_iso, crit_gene, crit_complex,
-                lambda_iso, eff_lambda_gene, eff_lambda_complex,
+                lambda_iso, lambda_gene, lambda_complex,
             )
-            val_loss, val_auc, val_ap, val_f1, _, _ = self.validate(val_loader, crit_iso)
+
+            val_loss, val_auc, val_ap = self.validate(val_loader, crit_iso)
 
             self.train_iso_losses.append(iso_loss)
             self.train_gene_losses.append(gene_loss)
@@ -385,17 +377,21 @@ class MultimodalTrainer:
             self.val_losses.append(val_loss)
             self.val_aucs.append(val_auc)
             self.val_aps.append(val_ap)
-            self.val_f1s.append(val_f1)
 
             scheduler.step(val_ap)
 
             if val_ap > best_ap:
                 best_ap    = val_ap
+                best_epoch = epoch
                 best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
 
             print(f"Epoch {epoch+1:3d}/{epochs}  "
                   f"L_iso={iso_loss:.4f}  L_gene={gene_loss:.4f}  L_cplx={complex_loss:.4f}  "
                   f"val_loss={val_loss:.4f}  AUC={val_auc:.4f}  AP={val_ap:.4f}")
+
+            if epoch - best_epoch >= patience:
+                print(f"  Early stopping (no improvement for {patience} epochs)")
+                break
 
         if best_state is not None:
             self.model.load_state_dict(best_state)
@@ -405,10 +401,10 @@ class MultimodalTrainer:
     def plot_training(self):
         fig, axes = plt.subplots(1, 3, figsize=(18, 4))
 
-        axes[0].plot(self.train_iso_losses,     label='Train iso loss')
-        axes[0].plot(self.train_gene_losses,    label='Train gene loss')
-        axes[0].plot(self.train_complex_losses, label='Train complex loss')
-        axes[0].plot(self.val_losses,           label='Val iso loss')
+        axes[0].plot(self.train_iso_losses,     label='Train iso')
+        axes[0].plot(self.train_gene_losses,    label='Train gene')
+        axes[0].plot(self.train_complex_losses, label='Train complex')
+        axes[0].plot(self.val_losses,           label='Val iso', linestyle='--')
         axes[0].set_xlabel('Epoch')
         axes[0].set_ylabel('Loss')
         axes[0].set_title('Training Losses')
@@ -417,7 +413,6 @@ class MultimodalTrainer:
 
         axes[1].plot(self.val_aucs, label='Val AUC', color='green')
         axes[1].plot(self.val_aps,  label='Val AP',  color='red')
-        axes[1].plot(self.val_f1s,  label='Val F1',  color='blue')
         axes[1].set_xlabel('Epoch')
         axes[1].set_title('Validation Metrics (Isoform–Isoform)')
         axes[1].legend()
