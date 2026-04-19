@@ -1,37 +1,55 @@
-# =========================================================
-# Latent Distance Model
-# =========================================================
+# ── Data ─────────────────────────────────────────────────────────────────────
 
 data:
   path: data/results_PHYSICAL_Prob_Model_16_02_26.csv
-  test_size: 0.2
-  val_size: 0.1
   random_state: 42
-  alpha: 0.5          # fraction of train negatives replaced by unseen pairs each epoch
+
+# ── Model ────────────────────────────────────────────────────────────────────
 
 model:
+  type: multimodal        # ldm | multimodal
   latent_dim: 32
-  distance_metric: euclidean  # euclidean | cosine
+
+# ── Split ────────────────────────────────────────────────────────────────────
+# transductive: gene-pair level split — all isoforms appear in training pairs
+# inductive:    isoform-level split  — held-out isoforms never appear in training pairs
+
+split:
+  mode: inductive         # transductive | inductive
+  val_fraction: 0.1       # fraction of data held out for validation
+  test_fraction: 0.2      # fraction of data held out for testing
+
+# ── Training ─────────────────────────────────────────────────────────────────
 
 training:
-  epochs: 29
+  epochs: 10
   learning_rate: 0.001
   batch_size: 512
   weight_decay: 1.0e-5
-  num_workers: 4           # set to 0 on macOS/MPS if issues arise
+  num_workers: 0          # set to 0 on macOS/MPS
+  patience: 10            # epochs without val AP improvement before early stopping
+
+# ── Multimodal settings (only used when model.type = multimodal) ─────────────
+
+multimodal:
+  esmc_path: data/esmc_globemb_noduplicates_15092025.csv
+  lambda_iso: 1.0         # loss weight: isoform–isoform pairs
+  lambda_gene: 0.5        # loss weight: gene–isoform bipartite
+  lambda_complex: 0.5     # loss weight: gene–gene STRING (0 = disabled)
+  neg_ratio: 10            # negatives per positive gene–isoform edge
+  batch_size: 512         # batch size for gene–isoform and gene–gene loaders
+  
+# ── Visualization ────────────────────────────────────────────────────────────
 
 visualization:
   pca_components: 2
   pca_max_components: 50
   label_top_n: 20
-  clustering_n_clusters: null   # null = auto-detect via height-gap + Calinski-Harabasz
-  clustering_n_clusters_max: 20 # upper bound of k search range when auto-detecting
+  clustering_n_clusters: null
+  clustering_n_clusters_max: 20
   clustering_truncate_level: 10
-umap:
-  n_neighbors: 15      # increase for more global structure (try 30 for large graphs)
-  min_dist: 0.1        # decrease for tighter clusters (try 0.05)
-  sample_size: null    # null = use all proteins; set e.g. 10000 for speed
-  hub_percentile: 95   # top 5% by degree = hubs in the proximity plot
+
+# ── Paths ────────────────────────────────────────────────────────────────────
 
 paths:
   models_dir: models

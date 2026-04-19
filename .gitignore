@@ -1,6 +1,7 @@
 # macOS
 .DS_Store
 .AppleDouble
+memory
 
 # Python
 __pycache__/

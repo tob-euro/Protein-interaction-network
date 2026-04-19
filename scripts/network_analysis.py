@@ -119,8 +119,8 @@ def analyze_bipartite_network(df):
     gene_isoforms = defaultdict(set)
     
     for _, row in df.iterrows():
-        gene_isoforms[row['gene_1']].add(row['enst_1'])
-        gene_isoforms[row['gene_2']].add(row['enst_2'])
+        gene_isoforms[row['gene_1']].add(row['ensp_1'])
+        gene_isoforms[row['gene_2']].add(row['ensp_2'])
     
     unique_genes = list(gene_isoforms.keys())
     degrees = [len(isoforms) for isoforms in gene_isoforms.values()]
@@ -185,6 +185,44 @@ def dataframe_analysis(df, save_path):
 
     
 
+def load_gene_gene_network(string_path="data/STRING_protein_pairs_wscores_physical.csv",
+                           mapping_path="data/gene-isoform_mapping_enst_ensp_ensg.csv",
+                           use_interactions_only=True):
+    """
+    Load STRING gene-gene interaction pairs, map ENSP → ENSG, and build a graph.
+
+    Args:
+        string_path:           path to STRING CSV (protein1, protein2, interact)
+        mapping_path:          path to ENSP→ENSG mapping CSV
+        use_interactions_only: if True, only add edges where interact=1
+    """
+    string_df = pd.read_csv(string_path)
+    mapping_df = pd.read_csv(mapping_path)
+    ensp_to_ensg = dict(zip(mapping_df['ensp_id'], mapping_df['ensg_id']))
+
+    ensg1 = string_df['protein1'].map(ensp_to_ensg)
+    ensg2 = string_df['protein2'].map(ensp_to_ensg)
+    mask = ensg1.notna() & ensg2.notna()
+    print(f"  ENSP→ENSG mappable: {mask.sum():,} / {len(string_df):,} "
+          f"(dropped {(~mask).sum():,} pairs with unmappable ENSP)")
+
+    ensg1 = ensg1[mask].values
+    ensg2 = ensg2[mask].values
+    labels = string_df['interact'][mask].values
+
+    G = nx.Graph()
+    for g1, g2, interact in zip(ensg1, ensg2, labels):
+        G.add_node(g1)
+        G.add_node(g2)
+        if not use_interactions_only or interact == 1:
+            G.add_edge(g1, g2, interact=int(interact))
+
+    mode = "positive interactions only" if use_interactions_only else "all pairs"
+    print(f"  Gene-gene graph ({mode}): {G.number_of_nodes():,} nodes, "
+          f"{G.number_of_edges():,} edges")
+    return G
+
+
 def main(csv_file):
     print("\n" + "="*70)
     print("PROTEIN NETWORK ANALYSIS")
@@ -207,6 +245,15 @@ def main(csv_file):
 
     degrees_bi = analyze_bipartite_network(df)
     plot_degree_distribution(degrees_bi, save_path="Bipartite_degree_distribution.png")
+
+    print("\n" + "="*70)
+    print("Gene-Gene Graph Analysis (STRING)")
+    print("="*70 + "\n")
+
+    G_gene = load_gene_gene_network()
+    degrees_gene = analyze_network_statistics(G_gene)
+    plot_degree_distribution(degrees_gene, save_path="GeneGene_degree_distribution.png")
+    find_hub_proteins(G_gene, top_n=20)
 
 
 

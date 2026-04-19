@@ -41,46 +41,40 @@ def sample_gene_isoform_pairs(gene_to_isoforms, gene_to_idx, protein_to_idx, gen
     """
     Build a list of (gene_idx, protein_idx, label) triples for one split.
 
-    Only genes whose canonical name appears in genes_in_split are included,
-    so train/val/test splits stay consistent with the isoform-pair split.
-    For each positive edge, neg_ratio negatives are sampled uniformly at random,
-    rejecting any isoforms that actually belong to the gene.
-
-    Returns:
-    - list of (gene_idx, protein_idx, label)
+    Only genes whose canonical name appears in genes_in_split are included.
+    For each positive edge, neg_ratio negatives are sampled from a pre-computed
+    pool of non-member isoforms (no rejection loop).
     """
     rng          = np.random.default_rng(random_state)
-    all_iso_arr  = np.array(list(protein_to_idx.keys()))
-
-    triples = []
+    all_iso_keys = np.array(list(protein_to_idx.keys()))
+    all_iso_vals = np.array(list(protein_to_idx.values()))
+    triples      = []
 
     for gene, isoforms in gene_to_isoforms.items():
         if gene not in genes_in_split:
             continue
 
-        g_idx = gene_to_idx[gene]
+        g_idx             = gene_to_idx[gene]
+        included_isoforms = [iso for iso in isoforms if iso in protein_to_idx]
+        if not included_isoforms:
+            continue
 
-        # Positive edges
-        for iso in isoforms:
-            if iso not in protein_to_idx:
-                continue
+        for iso in included_isoforms:
             triples.append((g_idx, protein_to_idx[iso], 1))
 
-        # Negative edges
-        n_neg        = len(isoforms) * neg_ratio
-        sampled      = 0
-        attempts     = 0
-        max_attempts = n_neg * 20
+        # Pre-compute non-member pool for this gene (no rejection loop)
+        member_set       = set(isoforms)
+        non_member_mask  = np.array([k not in member_set for k in all_iso_keys])
+        non_member_pool  = all_iso_vals[non_member_mask]
 
-        while sampled < n_neg and attempts < max_attempts:
-            candidates = all_iso_arr[rng.integers(0, len(all_iso_arr), size=n_neg - sampled + 10)]
-            for iso in candidates:
-                if iso not in isoforms and iso in protein_to_idx:
-                    triples.append((g_idx, protein_to_idx[iso], 0))
-                    sampled += 1
-                    if sampled >= n_neg:
-                        break
-            attempts += n_neg
+        if len(non_member_pool) == 0:
+            continue
+
+        n_neg    = len(included_isoforms) * neg_ratio
+        replace  = len(non_member_pool) < n_neg
+        sampled  = rng.choice(non_member_pool, size=n_neg, replace=replace)
+        for idx in sampled:
+            triples.append((g_idx, int(idx), 0))
 
     positives = sum(1 for _, _, l in triples if l == 1)
     negatives = len(triples) - positives
@@ -92,51 +86,62 @@ def sample_gene_isoform_pairs(gene_to_isoforms, gene_to_idx, protein_to_idx, gen
 
 
 def prepare_gene_isoform_splits(df, protein_to_idx, train_data, val_data, test_data,
-                                 neg_ratio=5, random_state=42):
+                                 neg_ratio=5, random_state=42,
+                                 inductive=False, held_out_isoforms=None):
     """
-    Convenience wrapper: builds the bipartite graph and produces
-    train/val/test triple lists aligned with the isoform-pair splits.
+    Build gene–isoform training (and optionally val) data.
+
+    Transductive mode (inductive=False):
+        Splits gene–isoform edges into train/val/test aligned with the
+        isoform-pair split by gene set.
+
+    Inductive mode (inductive=True):
+        ALL gene–isoform edges go to training — no val/test split.
+        Gene membership is always-known annotation, not experimental data.
+        Gene–isoform edges for held-out isoforms are included; the bipartite
+        loss anchors held-out isoform positions toward their parent gene.
 
     Returns:
-    - gene_to_idx, train_triples, val_triples, test_triples, neg_pos_ratio
-      neg_pos_ratio is computed from the train split and should be used as
-      pos_weight in BCEWithLogitsLoss for the gene-isoform component.
+        gene_to_idx, train_triples, val_triples, test_triples, neg_pos_ratio
+        (In inductive mode, val_triples and test_triples are empty lists.)
     """
     gene_to_idx, gene_to_isoforms = build_gene_isoform_graph(df)
 
     def gene_set(split_df):
         return set(split_df['gene_1']) | set(split_df['gene_2'])
 
-    print('\nSampling gene-isoform edges per split:')
-    # train_triples = sample_gene_isoform_pairs(
-    #     gene_to_isoforms, gene_to_idx, protein_to_idx,
-    #     gene_set(train_data), neg_ratio, random_state)
+    if inductive:
+        if held_out_isoforms:
+            print(f'\n  Inductive: gene–isoform edges for {len(held_out_isoforms):,} '
+                  f'held-out isoforms included as bipartite anchors')
 
-    # val_triples = sample_gene_isoform_pairs(
-    #     gene_to_isoforms, gene_to_idx, protein_to_idx,
-    #     gene_set(val_data), neg_ratio, random_state + 1)
+        all_genes = gene_set(train_data) | gene_set(val_data) | gene_set(test_data)
 
-    # test_triples = sample_gene_isoform_pairs(
-    #     gene_to_isoforms, gene_to_idx, protein_to_idx,
-    #     gene_set(test_data), neg_ratio, random_state + 2)
-    train_triples = sample_gene_isoform_pairs(
-        gene_to_isoforms, gene_to_idx, protein_to_idx,
-        gene_set(df), neg_ratio, random_state)
-    val_triples, test_triples = [], []
+        print(f'\nSampling gene-isoform edges (ALL → train):')
+        train_triples = sample_gene_isoform_pairs(
+            gene_to_isoforms, gene_to_idx, protein_to_idx,
+            all_genes, neg_ratio, random_state)
 
-    n_pos = sum(1 for _, _, l in train_triples if l == 1)
-    n_neg = len(train_triples) - n_pos
+        val_triples  = []
+        test_triples = []
+
+    else:
+        print('\nSampling gene-isoform edges per split:')
+        train_triples = sample_gene_isoform_pairs(
+            gene_to_isoforms, gene_to_idx, protein_to_idx,
+            gene_set(train_data), neg_ratio, random_state)
+
+        val_triples = sample_gene_isoform_pairs(
+            gene_to_isoforms, gene_to_idx, protein_to_idx,
+            gene_set(val_data), neg_ratio, random_state + 1)
+
+        test_triples = sample_gene_isoform_pairs(
+            gene_to_isoforms, gene_to_idx, protein_to_idx,
+            gene_set(test_data), neg_ratio, random_state + 2)
+
+    n_pos         = sum(1 for _, _, l in train_triples if l == 1)
+    n_neg         = len(train_triples) - n_pos
     neg_pos_ratio = n_neg / max(n_pos, 1)
-
-    # True structural ratio: every isoform belongs to exactly 1 gene, so for
-    # each positive (gene, isoform) edge there are (num_genes - 1) true negatives.
-    # We can't enumerate them all (~623M pairs), so we sample neg_ratio per positive.
-    # pos_weight = neg_ratio (sampled ratio) keeps gradient magnitudes balanced.
-    # The true ratio is reported here purely for information.
-    n_pos_edges  = sum(len(isos) for isos in gene_to_isoforms.values())
-    true_ratio   = (len(gene_to_isoforms) * len(protein_to_idx) - n_pos_edges) / max(n_pos_edges, 1)
-    print(f'  Gene-isoform true structural ratio: {true_ratio:.0f}:1  '
-          f'(sampling {neg_ratio}:1 → pos_weight={neg_pos_ratio:.1f})')
 
     return gene_to_idx, train_triples, val_triples, test_triples, neg_pos_ratio
 
