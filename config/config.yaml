@@ -34,8 +34,8 @@ training:
 multimodal:
   esmc_path: data/esmc_globemb_noduplicates_15092025.csv
   lambda_iso: 1.0         # loss weight: isoform–isoform pairs
-  lambda_gene: 0.5        # loss weight: gene–isoform bipartite
-  lambda_complex: 0.5     # loss weight: gene–gene STRING (0 = disabled)
+  lambda_gene: 0.0        # loss weight: gene–isoform bipartite
+  lambda_complex: 0.0     # loss weight: gene–gene STRING (0 = disabled)
   neg_ratio: 10            # negatives per positive gene–isoform edge
   batch_size: 512         # batch size for gene–isoform and gene–gene loaders
   

@@ -268,6 +268,7 @@ class MultimodalTrainer:
             iso_logits = self.model.forward_isoform(p1, p2)
             loss_iso   = crit_iso(iso_logits, iso_labels)
             loss       = lambda_iso * loss_iso
+            total_iso += loss_iso.item()
 
             if gene_iter is not None:
                 gene_idx, prot_idx, g_labels = next(gene_iter)
@@ -278,14 +279,22 @@ class MultimodalTrainer:
                 loss_gene   = crit_gene(gene_logits, g_labels)
                 loss        = loss + lambda_gene * loss_gene
                 total_gene += loss_gene.item()
+            
+            if complex_iter is not None:
+                gene_idx1, gene_idx2, gene_labels = next(complex_iter)
+                gene_idx1, gene_idx2, gene_labels = (gene_idx1.to(self.device),
+                                                gene_idx2.to(self.device),
+                                                gene_labels.to(self.device))
+                complex_logits = self.model.forward_complex(gene_idx1, gene_idx2)
+                loss_complex   = crit_complex(complex_logits, gene_labels)
+                loss        = loss + lambda_complex * loss_complex
+                total_complex += loss_complex.item()
 
-            loss = eff_lambda_iso * loss_iso + eff_lambda_gene * loss_gene + eff_lambda_complex * loss_complex
+            # loss = eff_lambda_iso * loss_iso + eff_lambda_gene * loss_gene + eff_lambda_complex * loss_complex
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
-
-            total_iso += loss_iso.item()
 
         return total_iso / n_steps, total_gene / n_steps, total_complex / n_steps
 
