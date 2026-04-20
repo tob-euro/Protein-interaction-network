@@ -35,7 +35,7 @@ from src.data_scripts.isoform_pairs import (
 )
 from src.data_scripts.gene_isoform_pairs import GeneIsoformDataset, prepare_gene_isoform_splits
 from src.data_scripts.gene_pairs import GeneGeneDataset, prepare_gene_gene_splits
-from src.training.evaluate import evaluate_model
+from src.training.evaluate import evaluate_model, evaluate_inductive_model
 
 
 def main():
@@ -196,7 +196,7 @@ def main():
             latent_dim=m['latent_dim'],
         )
     else:
-        use_residuals = True
+        use_residuals = False
         model = MultimodalLDM(
             num_proteins  = num_proteins,
             num_genes     = num_genes,
@@ -285,6 +285,8 @@ def main():
     # =========================================================================
     print("\nStep 6: Evaluating on test set...")
     auc, ap, _, _ = evaluate_model(model, test_loader, device=device, save_dir=save_dir)
+    if split_mode == "inductive":
+        auc1, ap1, auc2, ap2 = evaluate_inductive_model(model, test_data, test_proteins, protein_to_idx, batch_size=t['batch_size'], num_workers=t['num_workers'], device=device, save_dir=save_dir)
 
     # =========================================================================
     # 8. Save checkpoint
