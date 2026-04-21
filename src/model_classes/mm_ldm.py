@@ -18,13 +18,10 @@ class ProjectionMLP(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Linear(in_dim, hidden_dim),
+            nn.Dropout(),
             nn.ReLU(),
-            nn.Linear(hidden_dim, out_dim),
+            nn.Linear(hidden_dim, out_dim)
         )
-        nn.init.xavier_uniform_(self.net[0].weight)
-        nn.init.zeros_(self.net[0].bias)
-        nn.init.xavier_uniform_(self.net[2].weight)
-        nn.init.zeros_(self.net[2].bias)
 
     def forward(self, x):
         return self.net(x)
@@ -76,10 +73,10 @@ class MultimodalLDM(nn.Module):
             esmc_dim = esmc_features.shape[1]
 
             # ESM-C projection: maps sequence embeddings to latent positions
-            self.esmc_proj = ProjectionMLP(esmc_dim, 256, latent_dim)
+            self.esmc_proj = ProjectionMLP(esmc_dim, 16, latent_dim)
 
             # Random effect head: predicts propensity from ESM-C features
-            self.re_head = ProjectionMLP(esmc_dim, 128, 1)
+            self.re_head = ProjectionMLP(esmc_dim, 16, 1)
 
             if self.use_residuals:
                 # Per-isoform corrections on top of the ESM-C projection.
@@ -267,7 +264,7 @@ class MultimodalTrainer:
 
             iso_logits = self.model.forward_isoform(p1, p2)
             loss_iso   = crit_iso(iso_logits, iso_labels)
-            loss       = lambda_iso * loss_iso
+            loss       = eff_lambda_iso * loss_iso
             total_iso += loss_iso.item()
 
             if gene_iter is not None:
@@ -277,7 +274,7 @@ class MultimodalTrainer:
                                                 g_labels.to(self.device))
                 gene_logits = self.model.forward_bipartite(gene_idx, prot_idx)
                 loss_gene   = crit_gene(gene_logits, g_labels)
-                loss        = loss + lambda_gene * loss_gene
+                loss        = loss + eff_lambda_gene * loss_gene
                 total_gene += loss_gene.item()
             
             if complex_iter is not None:
@@ -287,7 +284,7 @@ class MultimodalTrainer:
                                                 gene_labels.to(self.device))
                 complex_logits = self.model.forward_complex(gene_idx1, gene_idx2)
                 loss_complex   = crit_complex(complex_logits, gene_labels)
-                loss        = loss + lambda_complex * loss_complex
+                loss        = loss + eff_lambda_complex * loss_complex
                 total_complex += loss_complex.item()
 
             # loss = eff_lambda_iso * loss_iso + eff_lambda_gene * loss_gene + eff_lambda_complex * loss_complex
@@ -405,7 +402,7 @@ class MultimodalTrainer:
         return best_ap
 
     def plot_training(self):
-        fig, axes = plt.subplots(1, 3, figsize=(18, 4))
+        fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
         axes[0].plot(self.train_iso_losses,     label='Train iso')
         axes[0].plot(self.train_gene_losses,    label='Train gene')
@@ -423,16 +420,6 @@ class MultimodalTrainer:
         axes[1].set_title('Validation Metrics (Isoform–Isoform)')
         axes[1].legend()
         axes[1].grid(True)
-
-        axes[2].plot([g / (i + 1e-9) for i, g in zip(self.train_iso_losses, self.train_gene_losses)],
-                     color='steelblue', label='gene / iso')
-        axes[2].plot([c / (i + 1e-9) for i, c in zip(self.train_iso_losses, self.train_complex_losses)],
-                     color='tomato', label='complex / iso')
-        axes[2].axhline(1.0, color='grey', linestyle='--', alpha=0.5)
-        axes[2].set_xlabel('Epoch')
-        axes[2].set_title('Loss Ratios (relative to iso loss)')
-        axes[2].legend()
-        axes[2].grid(True)
 
         plt.tight_layout()
         return fig
