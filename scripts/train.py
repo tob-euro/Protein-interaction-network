@@ -74,8 +74,8 @@ def main():
         print(f"GPU Memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
     print(f"Split: {split_mode}")
     if model_type == 'multimodal':
-        print(f"λ_iso={mm['lambda_iso']}  λ_gene={mm['lambda_gene']}  "
-              f"λ_complex={mm['lambda_complex']}  neg_ratio={mm['neg_ratio']}")
+        print(f"λ_iso_iso={mm['lambda_iso_iso']}  λ_gene_iso={mm['lambda_gene_iso']}  "
+              f"λ_gene_gene={mm['lambda_gene_gene']}  neg_ratio={mm['neg_ratio']}")
     print(f"{'='*70}\n")
 
     # =========================================================================
@@ -131,10 +131,10 @@ def main():
                               batch_size=t['batch_size'], shuffle=False,
                               num_workers=t['num_workers'])
 
-    gene_train_loader    = None
-    complex_train_loader = None
-    gene_iso_ratio       = 5.0
-    gene_gene_ratio      = 5.0
+    gene_iso_loader  = None
+    gene_gene_loader = None
+    gene_iso_ratio   = 5.0
+    gene_gene_ratio  = 5.0
     num_genes            = 0
     gene_to_idx          = {}
     df_full              = None
@@ -155,23 +155,23 @@ def main():
             held_out_isoforms=held_out_isoforms if is_inductive else None,
         )
         num_genes = len(gene_to_idx)
-        print(f"  Genes: {num_genes:,}  |  gene-isoform pos_weight (auto): {gene_iso_ratio:.1f}")
-        gene_train_loader = DataLoader(GeneIsoformDataset(train_g),
-                                       batch_size=mm_batch, shuffle=True,
-                                       num_workers=t['num_workers'])
+        print(f"  Genes: {num_genes:,}  |  gene–iso pos_weight (auto): {gene_iso_ratio:.1f}")
+        gene_iso_loader = DataLoader(GeneIsoformDataset(train_g),
+                                     batch_size=mm_batch, shuffle=True,
+                                     num_workers=t['num_workers'])
 
         # ── Gene–gene STRING ────────────────────────────────────────────────
-        if mm.get('lambda_complex', 0) > 0:
+        if mm.get('lambda_gene_gene', 0) > 0:
             print("\nStep 2c: Building gene–gene STRING interaction data...")
-            complex_train_t, _, _, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
+            gene_gene_train, _, _, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
                 gene_to_idx, train_data, val_data, test_data,
                 inductive=is_inductive,
             )
             num_genes = len(gene_to_idx)
             print(f"  Total genes (incl. STRING-only): {num_genes:,}  |  "
-                  f"gene-gene pos_weight (auto): {gene_gene_ratio:.1f}")
-            complex_train_loader = DataLoader(
-                GeneGeneDataset(complex_train_t),
+                  f"gene–gene pos_weight (auto): {gene_gene_ratio:.1f}")
+            gene_gene_loader = DataLoader(
+                GeneGeneDataset(gene_gene_train),
                 batch_size=mm_batch, shuffle=True,
                 num_workers=t['num_workers'],
             )
@@ -204,18 +204,22 @@ def main():
             latent_dim=m['latent_dim'],
         )
     else:
-        use_residuals = False
+        use_residuals   = mm.get('use_residuals', False)
+        proj_hidden_dim = mm.get('proj_hidden_dim', 16)
         model = MultimodalLDM(
-            num_proteins  = num_proteins,
-            num_genes     = num_genes,
-            latent_dim    = m['latent_dim'],
-            esmc_features = esmc_features,
-            use_residuals = use_residuals,
+            num_proteins    = num_proteins,
+            num_genes       = num_genes,
+            latent_dim      = m['latent_dim'],
+            esmc_features   = esmc_features,
+            use_residuals   = use_residuals,
+            proj_hidden_dim = proj_hidden_dim,
         )
         print(f"  Gene embeddings: {num_genes:,} × {m['latent_dim']}")
         if esmc_features is not None:
-            print(f"  Isoform positions: ESM-C proj ({esmc_features.shape[1]}→{m['latent_dim']}) + residual")
-            print(f"  Random effects: re_head({esmc_features.shape[1]}→128→1) + re_residual")
+            print(f"  Isoform positions: ESM-C proj ({esmc_features.shape[1]}→{proj_hidden_dim}→{m['latent_dim']})"
+                  + (" + residual" if use_residuals else ""))
+            print(f"  Random effects: re_head({esmc_features.shape[1]}→{proj_hidden_dim}→1)"
+                  + (" + re_residual" if use_residuals else ""))
             # Build gene→isoform map restricted to train isoforms in inductive mode
             # to avoid leaking held-out isoform positions into gene embeddings.
             ref_data = train_data if split_mode in ('inductive', 'inductive_gene') else df_full
@@ -249,22 +253,22 @@ def main():
     else:
         trainer = MultimodalTrainer(model, device=device)
         best_ap = trainer.train(
-            iso_train_loader     = train_loader,
-            gene_train_loader    = gene_train_loader,
-            # When lambda_complex=0, complex loader is unused but trainer always expects one.
-            # Pass gene_train_loader as a harmless dummy in that case.
-            complex_train_loader = complex_train_loader or gene_train_loader,
-            val_loader           = val_loader,
-            epochs               = t['epochs'],
-            lr                   = t['learning_rate'],
-            weight_decay         = t['weight_decay'],
-            iso_pos_weight       = neg_pos_ratio,
-            lambda_iso           = mm['lambda_iso'],
-            gene_pos_weight      = gene_iso_ratio,
-            lambda_gene          = mm['lambda_gene'],
-            complex_pos_weight   = gene_gene_ratio,
-            lambda_complex       = mm.get('lambda_complex', 0.0),
-            patience             = patience,
+            iso_iso_loader      = train_loader,
+            gene_iso_loader     = gene_iso_loader,
+            # When lambda_gene_gene=0, gene_gene loader is unused but trainer always expects one.
+            # Pass gene_iso_loader as a harmless dummy in that case.
+            gene_gene_loader    = gene_gene_loader or gene_iso_loader,
+            val_loader          = val_loader,
+            epochs              = t['epochs'],
+            lr                  = t['learning_rate'],
+            weight_decay        = t['weight_decay'],
+            iso_iso_pos_weight  = neg_pos_ratio,
+            lambda_iso_iso      = mm['lambda_iso_iso'],
+            gene_iso_pos_weight = gene_iso_ratio,
+            lambda_gene_iso     = mm['lambda_gene_iso'],
+            gene_gene_pos_weight= gene_gene_ratio,
+            lambda_gene_gene    = mm.get('lambda_gene_gene', 0.0),
+            patience            = patience,
         )
 
     # =========================================================================
@@ -320,12 +324,12 @@ def main():
         })
     if model_type == 'multimodal':
         checkpoint.update({
-            'gene_to_idx':    gene_to_idx,
-            'num_genes':      num_genes,
-            'lambda_iso':     mm['lambda_iso'],
-            'lambda_gene':    mm['lambda_gene'],
-            'neg_ratio':      mm['neg_ratio'],
-            'lambda_complex': mm.get('lambda_complex', 0.0),
+            'gene_to_idx':      gene_to_idx,
+            'num_genes':        num_genes,
+            'lambda_iso_iso':   mm['lambda_iso_iso'],
+            'lambda_gene_iso':  mm['lambda_gene_iso'],
+            'neg_ratio':        mm['neg_ratio'],
+            'lambda_gene_gene': mm.get('lambda_gene_gene', 0.0),
         })
         
     ckpt_name = "model.pt"

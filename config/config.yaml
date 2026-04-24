@@ -24,7 +24,7 @@ split:
 # ── Training ─────────────────────────────────────────────────────────────────
 
 training:
-  epochs: 10
+  epochs: 1
   learning_rate: 0.001
   batch_size: 512
   weight_decay: 1.0e-5
@@ -35,11 +35,13 @@ training:
 
 multimodal:
   esmc_path: data/esmc_globemb_noduplicates_15092025.csv
-  lambda_iso: 1.0         # loss weight: isoform–isoform pairs
-  lambda_gene: 0.5        # loss weight: gene–isoform bipartite
-  lambda_complex: 0.25     # loss weight: gene–gene STRING (0 = disabled)
-  neg_ratio: 10            # negatives per positive gene–isoform edge
-  batch_size: 512         # batch size for gene–isoform and gene–gene loaders
+  use_residuals: false     # add per-isoform residual on top of ESM-C projection
+  proj_hidden_dim: 16      # hidden dim of ESM-C projection and random-effect MLPs
+  lambda_iso_iso: 1.0      # loss weight: iso–iso pairs
+  lambda_gene_iso: 0.5     # loss weight: gene–iso bipartite
+  lambda_gene_gene: 0.25   # loss weight: gene–gene STRING (0 = disabled)
+  neg_ratio: 10             # negatives per positive gene–iso edge
+  batch_size: 512           # batch size for gene–iso and gene–gene loaders
   
 # ── Visualization ────────────────────────────────────────────────────────────
 

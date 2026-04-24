@@ -35,9 +35,9 @@ class MultimodalLDM(nn.Module):
     """
     Multimodal Latent Distance Model.
 
-    Isoform–isoform:  P(Y_ij = 1) = sigmoid(r_i + r_j − β_iso  · d(z_i, z_j))
-    Gene–isoform:     P(E_gi = 1) = sigmoid(γ_g        − β_gene · d(u_g, z_i))
-    Gene–gene:        P(C_gh = 1) = sigmoid(δ_g + δ_h  − β_gg   · d(u_g, u_h))
+    Iso–iso:      P(Y_ij = 1) = sigmoid(r_i + r_j       − β_iso_iso  · d(z_i, z_j))
+    Gene–iso:     P(E_gi = 1) = sigmoid(γ_g              − β_gene_iso · d(u_g, z_i))
+    Gene–gene:    P(C_gh = 1) = sigmoid(δ_g + δ_h        − β_gene_gene · d(u_g, u_h))
 
     Isoform latent positions (use_residuals=False, inductive):
         z_i = esmc_proj(esmc_i)                          purely ESM-C driven
@@ -62,7 +62,7 @@ class MultimodalLDM(nn.Module):
     """
 
     def __init__(self, num_proteins, num_genes, latent_dim=32,
-                 esmc_features=None, use_residuals=True):
+                 esmc_features=None, use_residuals=True, proj_hidden_dim=16):
         super().__init__()
 
         self.use_esmc      = esmc_features is not None
@@ -73,10 +73,10 @@ class MultimodalLDM(nn.Module):
             esmc_dim = esmc_features.shape[1]
 
             # ESM-C projection: maps sequence embeddings to latent positions
-            self.esmc_proj = ProjectionMLP(esmc_dim, 16, latent_dim)
+            self.esmc_proj = ProjectionMLP(esmc_dim, proj_hidden_dim, latent_dim)
 
             # Random effect head: predicts propensity from ESM-C features
-            self.re_head = ProjectionMLP(esmc_dim, 16, 1)
+            self.re_head = ProjectionMLP(esmc_dim, proj_hidden_dim, 1)
 
             if self.use_residuals:
                 # Per-isoform corrections on top of the ESM-C projection.
@@ -98,18 +98,18 @@ class MultimodalLDM(nn.Module):
         self.gene_embeddings = nn.Embedding(num_genes, latent_dim)
         nn.init.normal_(self.gene_embeddings.weight, mean=0, std=0.1)
 
-        # ── Isoform–isoform parameters ────────────────────────────────────────
-        self.beta_iso = nn.Parameter(torch.tensor(1.0))
+        # ── Iso–iso parameters ────────────────────────────────────────────────
+        self.beta_iso_iso = nn.Parameter(torch.tensor(1.0))
 
-        # ── Gene–isoform (bipartite) parameters ──────────────────────────────
-        self.beta_gene      = nn.Parameter(torch.tensor(1.0))
-        self.gene_intercept = nn.Embedding(num_genes, 1)
-        nn.init.normal_(self.gene_intercept.weight, mean=0, std=0.1)
+        # ── Gene–iso (bipartite) parameters ──────────────────────────────────
+        self.beta_gene_iso      = nn.Parameter(torch.tensor(1.0))
+        self.gene_iso_intercept = nn.Embedding(num_genes, 1)
+        nn.init.normal_(self.gene_iso_intercept.weight, mean=0, std=0.1)
 
-        # ── Gene–gene (complex co-membership) parameters ─────────────────────
-        self.beta_complex = nn.Parameter(torch.tensor(1.0))
-        self.gene_re      = nn.Embedding(num_genes, 1)
-        nn.init.normal_(self.gene_re.weight, mean=0, std=0.1)
+        # ── Gene–gene (STRING) parameters ─────────────────────────────────────
+        self.beta_gene_gene      = nn.Parameter(torch.tensor(1.0))
+        self.gene_gene_intercept = nn.Embedding(num_genes, 1)
+        nn.init.normal_(self.gene_gene_intercept.weight, mean=0, std=0.1)
 
     def _isoform_latent(self, protein_idx):
         """Isoform latent position: ESM-C projection (+ optional residual), or learned embedding."""
@@ -132,32 +132,42 @@ class MultimodalLDM(nn.Module):
     def compute_distance(self, z1, z2):
         return torch.norm(z1 - z2, p=2, dim=1)
 
-    def forward_isoform(self, protein1_idx, protein2_idx):
+    def forward_iso_iso(self, protein1_idx, protein2_idx):
         z1   = self._isoform_latent(protein1_idx)
         z2   = self._isoform_latent(protein2_idx)
         dist = self.compute_distance(z1, z2)
         r1   = self._random_effect(protein1_idx)
         r2   = self._random_effect(protein2_idx)
-        return r1 + r2 - nn.functional.softplus(self.beta_iso) * dist
+        return r1 + r2 - nn.functional.softplus(self.beta_iso_iso) * dist
 
-    def forward_bipartite(self, gene_idx, protein_idx):
+    def forward_gene_iso(self, gene_idx, protein_idx):
         u_g     = self.gene_embeddings(gene_idx)
         z_i     = self._isoform_latent(protein_idx)
         dist    = self.compute_distance(u_g, z_i)
-        gamma_g = self.gene_intercept(gene_idx).squeeze(-1)
-        return gamma_g - nn.functional.softplus(self.beta_gene) * dist
+        gamma_g = self.gene_iso_intercept(gene_idx).squeeze(-1)
+        return gamma_g - nn.functional.softplus(self.beta_gene_iso) * dist
 
-    def forward_complex(self, gene_idx_a, gene_idx_b):
+    def forward_gene_gene(self, gene_idx_a, gene_idx_b):
         u_g  = self.gene_embeddings(gene_idx_a)
         u_h  = self.gene_embeddings(gene_idx_b)
         dist = self.compute_distance(u_g, u_h)
-        d_g  = self.gene_re(gene_idx_a).squeeze(-1)
-        d_h  = self.gene_re(gene_idx_b).squeeze(-1)
-        return d_g + d_h - nn.functional.softplus(self.beta_complex) * dist
+        d_g  = self.gene_gene_intercept(gene_idx_a).squeeze(-1)
+        d_h  = self.gene_gene_intercept(gene_idx_b).squeeze(-1)
+        return d_g + d_h - nn.functional.softplus(self.beta_gene_gene) * dist
 
     # API compatibility with evaluate.py / visualize.py
     def forward(self, protein1_idx, protein2_idx):
-        return self.forward_isoform(protein1_idx, protein2_idx)
+        return self.forward_iso_iso(protein1_idx, protein2_idx)
+
+    # Legacy aliases — kept so old call-sites don't break immediately
+    def forward_isoform(self, protein1_idx, protein2_idx):
+        return self.forward_iso_iso(protein1_idx, protein2_idx)
+
+    def forward_bipartite(self, gene_idx, protein_idx):
+        return self.forward_gene_iso(gene_idx, protein_idx)
+
+    def forward_complex(self, gene_idx_a, gene_idx_b):
+        return self.forward_gene_gene(gene_idx_a, gene_idx_b)
 
     def get_embeddings(self):
         return self.get_isoform_embeddings()
@@ -230,79 +240,83 @@ class MultimodalTrainer:
         self.model  = model.to(device)
         self.device = device
 
-        self.train_iso_losses     = []
-        self.train_gene_losses    = []
-        self.train_complex_losses = []
-        self.val_losses           = []
-        self.val_aucs             = []
-        self.val_aps              = []
+        self.train_iso_iso_losses   = []
+        self.train_gene_iso_losses  = []
+        self.train_gene_gene_losses = []
+        self.val_losses             = []
+        self.val_aucs               = []
+        self.val_aps                = []
 
-    def train_epoch(self, iso_loader, gene_loader, complex_loader,
-                    optimizer, crit_iso, crit_gene, crit_complex,
-                    lambda_iso, lambda_gene, lambda_complex):
+    def train_epoch(self, iso_iso_loader, gene_iso_loader, gene_gene_loader,
+                    optimizer, crit_iso_iso, crit_gene_iso, crit_gene_gene,
+                    lambda_iso_iso, lambda_gene_iso, lambda_gene_gene):
         self.model.train()
 
-        n_steps = max(len(iso_loader), len(gene_loader), len(complex_loader))
+        n_steps = max(len(iso_iso_loader), len(gene_iso_loader), len(gene_gene_loader))
 
         # Cycle shorter loaders to match the longest so no signal is discarded.
         # Scale each modality's lambda down by its cycling factor so each unique
         # sample contributes equal total gradient weight per epoch regardless of
         # dataset size.
-        eff_lambda_iso     = lambda_iso     / (n_steps / len(iso_loader))
-        eff_lambda_gene    = lambda_gene    / (n_steps / len(gene_loader))
-        eff_lambda_complex = lambda_complex / (n_steps / len(complex_loader))
+        eff_lambda_iso_iso   = lambda_iso_iso   / (n_steps / len(iso_iso_loader))
+        eff_lambda_gene_iso  = lambda_gene_iso  / (n_steps / len(gene_iso_loader))
+        eff_lambda_gene_gene = lambda_gene_gene / (n_steps / len(gene_gene_loader))
 
-        iso_iter     = itertools.cycle(iso_loader)     if len(iso_loader)     < n_steps else iter(iso_loader)
-        gene_iter    = (itertools.cycle(gene_loader)    if len(gene_loader)    < n_steps else iter(gene_loader))    if lambda_gene    > 0 else None
-        complex_iter = (itertools.cycle(complex_loader) if len(complex_loader) < n_steps else iter(complex_loader)) if lambda_complex > 0 else None
+        iso_iso_iter   = (itertools.cycle(iso_iso_loader)
+                          if len(iso_iso_loader) < n_steps else iter(iso_iso_loader))
+        gene_iso_iter  = ((itertools.cycle(gene_iso_loader)
+                           if len(gene_iso_loader) < n_steps else iter(gene_iso_loader))
+                          if lambda_gene_iso > 0 else None)
+        gene_gene_iter = ((itertools.cycle(gene_gene_loader)
+                           if len(gene_gene_loader) < n_steps else iter(gene_gene_loader))
+                          if lambda_gene_gene > 0 else None)
 
-        total_iso, total_gene, total_complex = 0.0, 0.0, 0.0
+        total_iso_iso, total_gene_iso, total_gene_gene = 0.0, 0.0, 0.0
 
         for _ in range(n_steps):
-            p1, p2, iso_labels = next(iso_iter)
-            p1, p2, iso_labels = p1.to(self.device), p2.to(self.device), iso_labels.to(self.device)
+            p1, p2, iso_iso_labels = next(iso_iso_iter)
+            p1, p2, iso_iso_labels = (p1.to(self.device), p2.to(self.device),
+                                      iso_iso_labels.to(self.device))
 
-            iso_logits = self.model.forward_isoform(p1, p2)
-            loss_iso   = crit_iso(iso_logits, iso_labels)
-            loss       = eff_lambda_iso * loss_iso
-            total_iso += loss_iso.item()
+            iso_iso_logits  = self.model.forward_iso_iso(p1, p2)
+            loss_iso_iso    = crit_iso_iso(iso_iso_logits, iso_iso_labels)
+            loss            = eff_lambda_iso_iso * loss_iso_iso
+            total_iso_iso  += loss_iso_iso.item()
 
-            if gene_iter is not None:
-                gene_idx, prot_idx, g_labels = next(gene_iter)
-                gene_idx, prot_idx, g_labels = (gene_idx.to(self.device),
-                                                prot_idx.to(self.device),
-                                                g_labels.to(self.device))
-                gene_logits = self.model.forward_bipartite(gene_idx, prot_idx)
-                loss_gene   = crit_gene(gene_logits, g_labels)
-                loss        = loss + eff_lambda_gene * loss_gene
-                total_gene += loss_gene.item()
-            
-            if complex_iter is not None:
-                gene_idx1, gene_idx2, gene_labels = next(complex_iter)
-                gene_idx1, gene_idx2, gene_labels = (gene_idx1.to(self.device),
-                                                gene_idx2.to(self.device),
-                                                gene_labels.to(self.device))
-                complex_logits = self.model.forward_complex(gene_idx1, gene_idx2)
-                loss_complex   = crit_complex(complex_logits, gene_labels)
-                loss        = loss + eff_lambda_complex * loss_complex
-                total_complex += loss_complex.item()
+            if gene_iso_iter is not None:
+                gene_idx, prot_idx, gene_iso_labels = next(gene_iso_iter)
+                gene_idx, prot_idx, gene_iso_labels = (gene_idx.to(self.device),
+                                                       prot_idx.to(self.device),
+                                                       gene_iso_labels.to(self.device))
+                gene_iso_logits  = self.model.forward_gene_iso(gene_idx, prot_idx)
+                loss_gene_iso    = crit_gene_iso(gene_iso_logits, gene_iso_labels)
+                loss             = loss + eff_lambda_gene_iso * loss_gene_iso
+                total_gene_iso  += loss_gene_iso.item()
 
-            # loss = eff_lambda_iso * loss_iso + eff_lambda_gene * loss_gene + eff_lambda_complex * loss_complex
+            if gene_gene_iter is not None:
+                gene_idx_a, gene_idx_b, gene_gene_labels = next(gene_gene_iter)
+                gene_idx_a, gene_idx_b, gene_gene_labels = (gene_idx_a.to(self.device),
+                                                             gene_idx_b.to(self.device),
+                                                             gene_gene_labels.to(self.device))
+                gene_gene_logits  = self.model.forward_gene_gene(gene_idx_a, gene_idx_b)
+                loss_gene_gene    = crit_gene_gene(gene_gene_logits, gene_gene_labels)
+                loss              = loss + eff_lambda_gene_gene * loss_gene_gene
+                total_gene_gene  += loss_gene_gene.item()
 
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
 
-        return total_iso / n_steps, total_gene / n_steps, total_complex / n_steps
+        return total_iso_iso / n_steps, total_gene_iso / n_steps, total_gene_gene / n_steps
 
     def validate(self, val_loader, criterion):
-        """Validate on isoform–isoform pairs. Returns loss, AUC, AP."""
+        """Validate on iso–iso pairs. Returns loss, AUC, AP."""
         self.model.eval()
         total_loss, all_preds, all_labels = 0.0, [], []
         with torch.no_grad():
             for p1, p2, labels in val_loader:
                 p1, p2, labels = p1.to(self.device), p2.to(self.device), labels.to(self.device)
-                logits = self.model.forward_isoform(p1, p2)
+                logits = self.model.forward_iso_iso(p1, p2)
                 total_loss += criterion(logits, labels).item()
                 all_preds.extend(logits.cpu().numpy())
                 all_labels.extend(labels.cpu().numpy())
@@ -315,34 +329,34 @@ class MultimodalTrainer:
 
     def train(
         self,
-        iso_train_loader,
-        gene_train_loader,
-        complex_train_loader,
+        iso_iso_loader,
+        gene_iso_loader,
+        gene_gene_loader,
         val_loader,
         epochs=30,
         lr=1e-3,
         weight_decay=1e-5,
-        iso_pos_weight=222.2,
-        lambda_iso=1.0,
-        gene_pos_weight=5.0,
-        lambda_gene=0.5,
-        complex_pos_weight=5.0,
-        lambda_complex=0.3,
+        iso_iso_pos_weight=222.2,
+        lambda_iso_iso=1.0,
+        gene_iso_pos_weight=5.0,
+        lambda_gene_iso=0.5,
+        gene_gene_pos_weight=5.0,
+        lambda_gene_gene=0.3,
         patience=10,
     ):
         """
         Full three-modality training loop.
 
-        Gene-isoform and gene-gene data are always fully used for training (no
+        Gene–iso and gene–gene data are always fully used for training (no
         val/test split) — they are annotation/prior data, not experimental targets.
-        Validation is isoform-isoform only, which is the actual prediction task.
+        Validation is iso–iso only, which is the actual prediction task.
 
         Args:
-            patience: epochs without iso val AP improvement before early stopping.
+            patience: epochs without iso–iso val AP improvement before early stopping.
         """
-        crit_iso     = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(iso_pos_weight,     dtype=torch.float32).to(self.device))
-        crit_gene    = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(gene_pos_weight,    dtype=torch.float32).to(self.device))
-        crit_complex = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(complex_pos_weight, dtype=torch.float32).to(self.device))
+        crit_iso_iso   = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(iso_iso_pos_weight,   dtype=torch.float32).to(self.device))
+        crit_gene_iso  = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(gene_iso_pos_weight,  dtype=torch.float32).to(self.device))
+        crit_gene_gene = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(gene_gene_pos_weight, dtype=torch.float32).to(self.device))
 
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -350,33 +364,33 @@ class MultimodalTrainer:
 
         best_ap, best_epoch, best_state = 0.0, 0, None
 
-        n_iso     = len(iso_train_loader)
-        n_gene    = len(gene_train_loader)
-        n_complex = len(complex_train_loader)
-        n_steps   = max(n_iso, n_gene, n_complex)
+        n_iso_iso   = len(iso_iso_loader)
+        n_gene_iso  = len(gene_iso_loader)
+        n_gene_gene = len(gene_gene_loader)
+        n_steps     = max(n_iso_iso, n_gene_iso, n_gene_gene)
 
         print(f"Training MultimodalLDM (3 modalities) on {self.device}")
-        print(f"  λ_iso={lambda_iso}  λ_gene={lambda_gene}  λ_complex={lambda_complex}")
-        print(f"  pos_weights — iso: {iso_pos_weight:.2f}  gene: {gene_pos_weight:.2f}  complex: {complex_pos_weight:.2f}")
-        print(f"  Steps/epoch: {n_steps}  (iso={n_iso}  gene={n_gene}  complex={n_complex}  → max, shorter loaders cycle)")
-        print(f"  Effective λ — iso: {lambda_iso:.3f}  "
-              f"gene: {lambda_gene / (n_steps/n_gene):.3f}  "
-              f"complex: {lambda_complex / (n_steps/n_complex):.3f}  (scaled by cycling factor)")
+        print(f"  λ_iso_iso={lambda_iso_iso}  λ_gene_iso={lambda_gene_iso}  λ_gene_gene={lambda_gene_gene}")
+        print(f"  pos_weights — iso_iso: {iso_iso_pos_weight:.2f}  gene_iso: {gene_iso_pos_weight:.2f}  gene_gene: {gene_gene_pos_weight:.2f}")
+        print(f"  Steps/epoch: {n_steps}  (iso_iso={n_iso_iso}  gene_iso={n_gene_iso}  gene_gene={n_gene_gene}  → max, shorter loaders cycle)")
+        print(f"  Effective λ — iso_iso: {lambda_iso_iso:.3f}  "
+              f"gene_iso: {lambda_gene_iso / (n_steps/n_gene_iso):.3f}  "
+              f"gene_gene: {lambda_gene_gene / (n_steps/n_gene_gene):.3f}  (scaled by cycling factor)")
         print(f"  Early stopping patience: {patience}")
         print("-" * 70)
 
         for epoch in range(epochs):
-            iso_loss, gene_loss, complex_loss = self.train_epoch(
-                iso_train_loader, gene_train_loader, complex_train_loader,
-                optimizer, crit_iso, crit_gene, crit_complex,
-                lambda_iso, lambda_gene, lambda_complex,
+            iso_iso_loss, gene_iso_loss, gene_gene_loss = self.train_epoch(
+                iso_iso_loader, gene_iso_loader, gene_gene_loader,
+                optimizer, crit_iso_iso, crit_gene_iso, crit_gene_gene,
+                lambda_iso_iso, lambda_gene_iso, lambda_gene_gene,
             )
 
-            val_loss, val_auc, val_ap = self.validate(val_loader, crit_iso)
+            val_loss, val_auc, val_ap = self.validate(val_loader, crit_iso_iso)
 
-            self.train_iso_losses.append(iso_loss)
-            self.train_gene_losses.append(gene_loss)
-            self.train_complex_losses.append(complex_loss)
+            self.train_iso_iso_losses.append(iso_iso_loss)
+            self.train_gene_iso_losses.append(gene_iso_loss)
+            self.train_gene_gene_losses.append(gene_gene_loss)
             self.val_losses.append(val_loss)
             self.val_aucs.append(val_auc)
             self.val_aps.append(val_ap)
@@ -389,7 +403,7 @@ class MultimodalTrainer:
                 best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
 
             print(f"Epoch {epoch+1:3d}/{epochs}  "
-                  f"L_iso={iso_loss:.4f}  L_gene={gene_loss:.4f}  L_cplx={complex_loss:.4f}  "
+                  f"L_ii={iso_iso_loss:.4f}  L_gi={gene_iso_loss:.4f}  L_gg={gene_gene_loss:.4f}  "
                   f"val_loss={val_loss:.4f}  AUC={val_auc:.4f}  AP={val_ap:.4f}")
 
             if epoch - best_epoch >= patience:
@@ -404,10 +418,10 @@ class MultimodalTrainer:
     def plot_training(self):
         fig, axes = plt.subplots(1, 2, figsize=(12, 4))
 
-        axes[0].plot(self.train_iso_losses,     label='Train iso')
-        axes[0].plot(self.train_gene_losses,    label='Train gene')
-        axes[0].plot(self.train_complex_losses, label='Train complex')
-        axes[0].plot(self.val_losses,           label='Val iso', linestyle='--')
+        axes[0].plot(self.train_iso_iso_losses,   label='Train iso–iso')
+        axes[0].plot(self.train_gene_iso_losses,  label='Train gene–iso')
+        axes[0].plot(self.train_gene_gene_losses, label='Train gene–gene')
+        axes[0].plot(self.val_losses,             label='Val iso–iso', linestyle='--')
         axes[0].set_xlabel('Epoch')
         axes[0].set_ylabel('Loss')
         axes[0].set_title('Training Losses')
@@ -417,7 +431,7 @@ class MultimodalTrainer:
         axes[1].plot(self.val_aucs, label='Val AUC', color='green')
         axes[1].plot(self.val_aps,  label='Val AP',  color='red')
         axes[1].set_xlabel('Epoch')
-        axes[1].set_title('Validation Metrics (Isoform–Isoform)')
+        axes[1].set_title('Validation Metrics (Iso–Iso)')
         axes[1].legend()
         axes[1].grid(True)
 
