@@ -4,11 +4,14 @@ train.py — Unified training script for LDM and MultimodalLDM.
 All configuration is loaded from config/config.yaml (or a custom config file).
 
 Split modes (config: split.mode):
-  transductive: gene-pair level split — all isoforms are seen during training.
-                Validation/test pairs involve unseen gene-pair combinations.
-  inductive:    isoform-level split — a fraction of isoforms are held out
-                entirely from isoform-pair training. Gene–isoform and gene–gene
-                data always goes entirely to training (prior knowledge).
+  transductive:    gene-pair level split — all isoforms are seen during training.
+                   Validation/test pairs involve unseen gene-pair combinations.
+  inductive:       isoform-level split — a fraction of isoforms are held out
+                   entirely from isoform-pair training. Gene–isoform and gene–gene
+                   data always goes entirely to training (prior knowledge).
+  inductive_gene:  gene-level split — genes (not individual isoforms) are
+                   partitioned so all isoforms of a gene are always in the same
+                   split, eliminating within-gene data leakage.
 
 Usage:
     python scripts/train.py
@@ -30,6 +33,7 @@ from src.data_scripts.isoform_pairs import (
     ProteinInteractionDataset,
     load_and_prepare_data,
     load_and_prepare_data_inductive,
+    load_and_prepare_data_inductive_gene,
     diagnose_split,
     diagnose_split_inductive,
 )
@@ -53,7 +57,7 @@ def main():
     sp = cfg['split']
     mm = cfg.get('multimodal', {})
 
-    split_mode    = sp['mode']           # 'transductive' | 'inductive'
+    split_mode    = sp['mode']           # 'transductive' | 'inductive' | 'inductive_gene'
     model_type    = m['type']            # 'ldm' | 'multimodal'
     val_fraction  = sp['val_fraction']
     test_fraction = sp['test_fraction']
@@ -93,10 +97,12 @@ def main():
               f"Train: {len(train_dataset):,}  Val: {len(val_data):,}  Test: {len(test_data):,}")
         diagnose_split(train_dataset, val_data, test_data)
 
-    elif split_mode == 'inductive':
+    elif split_mode in ('inductive', 'inductive_gene'):
+        load_fn = (load_and_prepare_data_inductive if split_mode == 'inductive'
+                   else load_and_prepare_data_inductive_gene)
         (train_dataset, train_data, val_data, test_data,
          protein_to_idx, num_proteins, neg_pos_ratio,
-         train_proteins, val_proteins, test_proteins) = load_and_prepare_data_inductive(
+         train_proteins, val_proteins, test_proteins) = load_fn(
             d['path'],
             test_size=test_fraction,
             val_size=val_fraction,
@@ -108,7 +114,8 @@ def main():
         diagnose_split_inductive(train_data, val_data, test_data,
                                   train_proteins, val_proteins, test_proteins)
     else:
-        raise ValueError(f"Unknown split mode: {split_mode!r}. Use 'transductive' or 'inductive'.")
+        raise ValueError(f"Unknown split mode: {split_mode!r}. "
+                         f"Use 'transductive', 'inductive', or 'inductive_gene'.")
 
     # =========================================================================
     # 2. Dataloaders
@@ -138,13 +145,14 @@ def main():
 
         # ── Gene–isoform bipartite ──────────────────────────────────────────
         print("\nStep 2b: Building gene–isoform bipartite graph...")
+        is_inductive = split_mode in ('inductive', 'inductive_gene')
         gene_to_idx, train_g, _, _, gene_iso_ratio = prepare_gene_isoform_splits(
             df_full, protein_to_idx,
             train_data, val_data, test_data,
             neg_ratio=mm['neg_ratio'],
             random_state=d['random_state'],
-            inductive=(split_mode == 'inductive'),
-            held_out_isoforms=held_out_isoforms if split_mode == 'inductive' else None,
+            inductive=is_inductive,
+            held_out_isoforms=held_out_isoforms if is_inductive else None,
         )
         num_genes = len(gene_to_idx)
         print(f"  Genes: {num_genes:,}  |  gene-isoform pos_weight (auto): {gene_iso_ratio:.1f}")
@@ -157,7 +165,7 @@ def main():
             print("\nStep 2c: Building gene–gene STRING interaction data...")
             complex_train_t, _, _, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
                 gene_to_idx, train_data, val_data, test_data,
-                inductive=(split_mode == 'inductive'),
+                inductive=is_inductive,
             )
             num_genes = len(gene_to_idx)
             print(f"  Total genes (incl. STRING-only): {num_genes:,}  |  "
@@ -187,7 +195,7 @@ def main():
             n_missing = (esmc_df.reindex(ordered_ensp).isna().any(axis=1)).sum()
             print(f"  ESM-C: {esmc_features.shape[1]}-dim features for {len(ordered_ensp):,} proteins "
                   f"({n_missing:,} missing → zero-filled)")
-            if split_mode == 'inductive':
+            if split_mode in ('inductive', 'inductive_gene'):
                 print(f"  {len(held_out_isoforms):,} held-out isoforms: positions from ESM-C projection + zero residual (residual trains to zero for unseen)")
 
     if model_type == 'ldm':
@@ -196,7 +204,7 @@ def main():
             latent_dim=m['latent_dim'],
         )
     else:
-        use_residuals = True
+        use_residuals = False
         model = MultimodalLDM(
             num_proteins  = num_proteins,
             num_genes     = num_genes,
@@ -210,7 +218,7 @@ def main():
             print(f"  Random effects: re_head({esmc_features.shape[1]}→128→1) + re_residual")
             # Build gene→isoform map restricted to train isoforms in inductive mode
             # to avoid leaking held-out isoform positions into gene embeddings.
-            ref_data = train_data if split_mode == 'inductive' else df_full
+            ref_data = train_data if split_mode in ('inductive', 'inductive_gene') else df_full
             gene_to_isoforms = {}
             for g, iso in zip(ref_data['gene_1'], ref_data['ensp_1']):
                 gene_to_isoforms.setdefault(g, set()).add(iso)
@@ -263,7 +271,8 @@ def main():
     # 5. Save dir — timestamp + config snapshot so hyperparameters are always recorded
     # =========================================================================
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-    split_tag = 'TRANS' if split_mode == 'transductive' else 'IND'
+    split_tag = ('TRANS' if split_mode == 'transductive' else
+                 'IND_G' if split_mode == 'inductive_gene' else 'IND')
     model_tag = 'LDM' if model_type == 'ldm' else 'MM'
     save_dir  = f"models/{split_tag}_{model_tag}_{timestamp}"
     os.makedirs(save_dir, exist_ok=True)
@@ -285,7 +294,7 @@ def main():
     # =========================================================================
     print("\nStep 6: Evaluating on test set...")
     auc, ap, _, _ = evaluate_model(model, test_loader, device=device, save_dir=save_dir)
-    if split_mode == "inductive":
+    if split_mode in ('inductive', 'inductive_gene'):
         auc1, ap1, auc2, ap2 = evaluate_inductive_model(model, test_data, test_proteins, protein_to_idx, batch_size=t['batch_size'], num_workers=t['num_workers'], device=device, save_dir=save_dir)
 
     # =========================================================================
@@ -303,7 +312,7 @@ def main():
         'test_ap':          ap,
         'use_residuals':    True,
     }
-    if split_mode == 'inductive':
+    if split_mode in ('inductive', 'inductive_gene'):
         checkpoint.update({
             'train_proteins': list(train_proteins),
             'val_proteins':   list(val_proteins),
