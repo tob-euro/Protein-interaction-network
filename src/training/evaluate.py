@@ -195,14 +195,19 @@ def evaluate_inductive_model(model, test_data, test_proteins, protein_to_idx, ba
     tn2, fp2, fn2, tp2       = confusion_matrix(labels2, preds2_bin).ravel().tolist()
     total2                = tn2 + fp2 + fn2 + tp2
 
-    print(f"\nEvaluation Results (for both interaction classes):")
+    print(f"\nEvaluation Results (for both interaction classes):\n")
+
+    plot_confusion_matrix(tn1, fp1, fn1, tp1, save_dir=save_dir, title="Confusion matrix (Both-unseen)")
+
+    plot_confusion_matrix(tn2, fp2, fn2, tp2, save_dir=save_dir, title="Confusion matrix (One-unseen)")
+
     print(f"  \t Class-1 (both unseen) \t Class-2 (one unseen)")
     print(f"  AUC-ROC: \t{auc1:.4f} \t\t\t{auc2:.4f}")
     print(f"  Avg Prec: \t{ap1:.4f} \t\t\t{ap2:.4f}")
     print(f"  Accuracy: \t{(tp1 + tn1) / total1:.4f} \t\t\t{(tp2 + tn2) / total2:.4f}")
-    print(f"  Recall: \t{tp1 / (tp1 + fn1):.4f} \t\t\t{tp2 / (tp2 + fn2):.4f}")
-    print(f"  Precision: \t{tp1 / (tp1 + fp1):.4f} \t\t\t{tp2 / (tp2 + fp2):.4f}")
-    print(f"  Specificity: \t{tn1 / (tn1 + fp1):.4f} \t\t\t{tn2 / (tn2 + fp2):.4f}\n")
+    print(f"  Recall: \t{tp1 / max(tp1 + fn1, 1):.4f} \t\t\t{tp2 / max(tp2 + fn2, 1):.4f}")
+    print(f"  Precision: \t{tp1 / max(tp1 + fp1, 1):.4f} \t\t\t{tp2 / max(tp2 + fp2, 1):.4f}")
+    print(f"  Specificity: \t{tn1 / max(tn1 + fp1, 1):.4f} \t\t\t{tn2 / max(tn2 + fp2, 1):.4f}\n")
 
     # ROC curve
     plt.figure(figsize=(8, 6))
@@ -230,14 +235,48 @@ def evaluate_inductive_model(model, test_data, test_proteins, protein_to_idx, ba
     plt.legend(); plt.grid(True)
     if save_dir:
         plt.savefig(f"{save_dir}/precision_recall_separated.png", dpi=300, bbox_inches='tight')
-        print(f"Saved figures to {save_dir}:\n roc_curves_separated.png\n precision_recall_separated.png")
+        print(f"Saved figures to {save_dir}:\n roc_curves_separated.png\n precision_recall_separated.png\n Confusion_matrix_(Both-unseen).png\n Confusion_matrix_(One-unseen).png")
 
     return auc1, ap1, auc2, ap2
 
+def plot_confusion_matrix(tn, fp, fn, tp, save_dir=None, title="Confusion Matrix"):
+    total = tn + fp + fn + tp
+    matrix = np.array([[tn, fp], [fn, tp]])
+    labels = [["TN", "FP"], ["FN", "TP"]]
+
+    acc  = (tp + tn) / total
+    prec = tp / (tp + fp) if (tp + fp) else 0
+    rec  = tp / (tp + fn) if (tp + fn) else 0
+
+    fig, ax = plt.subplots(figsize=(5, 4))
+    im = ax.imshow(matrix, cmap="Blues")
+
+    ax.set_xticks([0, 1])
+    ax.set_yticks([0, 1])
+    ax.set_xticklabels(["Pred Neg", "Pred Pos"])
+    ax.set_yticklabels(["Actual Neg", "Actual Pos"])
+    ax.xaxis.set_label_position("top")
+    ax.xaxis.tick_top()
+
+    for i in range(2):
+        for j in range(2):
+            val = matrix[i, j]
+            ax.text(j, i, f"{labels[i][j]}\n{val} ({val/total:.0%})",
+                    ha="center", va="center", fontsize=12,
+                    color="white" if val > matrix.max() * 0.6 else "black")
+
+    ax.set_title(title, pad=20, fontweight="bold")
+    fig.text(0.5, 0.02,
+             f"Accuracy: {acc:.1%}  |  Precision: {prec:.1%}  |  Recall: {rec:.1%}",
+             ha="center", fontsize=10)
+
+    plt.tight_layout(rect=[0, 0.06, 1, 1])
+    if save_dir:
+        plt.savefig(f"{save_dir}/{"_".join(title.split(" "))}.png", dpi=300, bbox_inches='tight')
 
 if __name__ == "__main__":
-    model_dir = "models/IND_MM_20260420_151211"
-    model_path = model_dir + "/multimodal_ldm.pt"
+    model_dir = "models/IND_MM_20260423_123332"
+    model_path = model_dir + "/model.pt"
     model, _, _ = load_model(model_path=model_path)
 
     from src.data_scripts.isoform_pairs import load_and_prepare_data, load_and_prepare_data_inductive

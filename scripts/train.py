@@ -196,7 +196,7 @@ def main():
             latent_dim=m['latent_dim'],
         )
     else:
-        use_residuals = False
+        use_residuals = True
         model = MultimodalLDM(
             num_proteins  = num_proteins,
             num_genes     = num_genes,
@@ -318,10 +318,8 @@ def main():
             'neg_ratio':      mm['neg_ratio'],
             'lambda_complex': mm.get('lambda_complex', 0.0),
         })
-        ckpt_name = 'multimodal_ldm.pt'
-    else:
-        ckpt_name = 'latent_distance_model.pt'
-
+        
+    ckpt_name = "model.pt"
     torch.save(checkpoint, f"{save_dir}/{ckpt_name}")
     print(f"  Saved: {save_dir}/{ckpt_name}")
 

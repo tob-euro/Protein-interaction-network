@@ -9,25 +9,13 @@ from src.training.evaluate import load_model
 from src.visualizations.pca import visualize_latent_space_pca, visualize_pca_variance
 from src.visualizations.hierarchical_clustering import plot_dendrogram, plot_cluster_sizes, plot_pca_by_cluster
 
-
-def detect_model_type(model_dir):
-    """Infer checkpoint path from directory contents."""
-    mm_pt  = os.path.join(model_dir, 'multimodal_ldm.pt')
-    ldm_pt = os.path.join(model_dir, 'latent_distance_model.pt')
-    if os.path.exists(mm_pt):
-        return mm_pt
-    if os.path.exists(ldm_pt):
-        return ldm_pt
-    sys.exit(f"No checkpoint found in {model_dir}")
-
-
 def main():
     parser = argparse.ArgumentParser(description='Visualize a trained LDM or MultimodalLDM.')
     parser.add_argument('model_dir', type=str, help='Path to model directory (contains .pt checkpoint)')
     parser.add_argument('--config', type=str, default='config/config.yaml')
     args = parser.parse_args()
 
-    model_pt = detect_model_type(args.model_dir)
+    model_pt = os.path.join(args.model_dir, "model.pt")
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
