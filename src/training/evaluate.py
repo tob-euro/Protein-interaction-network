@@ -272,7 +272,8 @@ def plot_confusion_matrix(tn, fp, fn, tp, save_dir=None, title="Confusion Matrix
 
     plt.tight_layout(rect=[0, 0.06, 1, 1])
     if save_dir:
-        plt.savefig(f"{save_dir}/{"_".join(title.split(" "))}.png", dpi=300, bbox_inches='tight')
+        fname = "_".join(title.split(" "))
+        plt.savefig(f"{save_dir}/{fname}.png", dpi=300, bbox_inches='tight')
 
 if __name__ == "__main__":
     model_dir = "models/IND_MM_20260423_123332"
