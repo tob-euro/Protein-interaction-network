@@ -115,7 +115,7 @@ def prepare_gene_gene_splits(gene_to_idx, train_data, val_data, test_data,
         print(f"\nInductive mode: all {len(pairs):,} gene-gene pairs → training")
         train_pairs = pairs
         val_pairs   = []
-        test_pairs  = []
+        test_pairs  = pairs
 
         n_pos = sum(1 for _, _, l in train_pairs if l == 1)
         n_neg = len(train_pairs) - n_pos

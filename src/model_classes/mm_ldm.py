@@ -155,19 +155,8 @@ class MultimodalLDM(nn.Module):
         d_h  = self.gene_gene_intercept(gene_idx_b).squeeze(-1)
         return d_g + d_h - nn.functional.softplus(self.beta_gene_gene) * dist
 
-    # API compatibility with evaluate.py / visualize.py
     def forward(self, protein1_idx, protein2_idx):
         return self.forward_iso_iso(protein1_idx, protein2_idx)
-
-    # Legacy aliases — kept so old call-sites don't break immediately
-    def forward_isoform(self, protein1_idx, protein2_idx):
-        return self.forward_iso_iso(protein1_idx, protein2_idx)
-
-    def forward_bipartite(self, gene_idx, protein_idx):
-        return self.forward_gene_iso(gene_idx, protein_idx)
-
-    def forward_complex(self, gene_idx_a, gene_idx_b):
-        return self.forward_gene_gene(gene_idx_a, gene_idx_b)
 
     def get_embeddings(self):
         return self.get_isoform_embeddings()
@@ -280,7 +269,7 @@ class MultimodalTrainer:
 
             iso_iso_logits  = self.model.forward_iso_iso(p1, p2)
             loss_iso_iso    = crit_iso_iso(iso_iso_logits, iso_iso_labels)
-            loss            = eff_lambda_iso_iso * loss_iso_iso
+            # loss            = eff_lambda_iso_iso * loss_iso_iso
             total_iso_iso  += loss_iso_iso.item()
 
             if gene_iso_iter is not None:
@@ -290,7 +279,6 @@ class MultimodalTrainer:
                                                        gene_iso_labels.to(self.device))
                 gene_iso_logits  = self.model.forward_gene_iso(gene_idx, prot_idx)
                 loss_gene_iso    = crit_gene_iso(gene_iso_logits, gene_iso_labels)
-                loss             = loss + eff_lambda_gene_iso * loss_gene_iso
                 total_gene_iso  += loss_gene_iso.item()
 
             if gene_gene_iter is not None:
@@ -300,8 +288,10 @@ class MultimodalTrainer:
                                                              gene_gene_labels.to(self.device))
                 gene_gene_logits  = self.model.forward_gene_gene(gene_idx_a, gene_idx_b)
                 loss_gene_gene    = crit_gene_gene(gene_gene_logits, gene_gene_labels)
-                loss              = loss + eff_lambda_gene_gene * loss_gene_gene
                 total_gene_gene  += loss_gene_gene.item()
+            
+            # Combine losses from the three modalities
+            loss = eff_lambda_iso_iso * loss_iso_iso + eff_lambda_gene_iso * loss_gene_iso + eff_lambda_gene_gene * loss_gene_gene
 
             optimizer.zero_grad()
             loss.backward()
@@ -402,7 +392,7 @@ class MultimodalTrainer:
                 best_epoch = epoch
                 best_state = {k: v.clone() for k, v in self.model.state_dict().items()}
 
-            print(f"Epoch {epoch+1:3d}/{epochs}  "
+            print(f"Epoch {epoch+1}/{epochs}  "
                   f"L_ii={iso_iso_loss:.4f}  L_gi={gene_iso_loss:.4f}  L_gg={gene_gene_loss:.4f}  "
                   f"val_loss={val_loss:.4f}  AUC={val_auc:.4f}  AP={val_ap:.4f}")
 

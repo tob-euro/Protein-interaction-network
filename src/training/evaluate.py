@@ -55,18 +55,100 @@ def load_model(model_path, device='cpu', only_re=False):
     model.eval()
     return model, checkpoint['protein_to_idx'], checkpoint
 
+def plot_roc_curves(curves, save_path=None, title="ROC Curve"):
+    """Plot one or more ROC curves on a single figure.
+
+    curves: list of (fpr, tpr, legend_label[, color]) tuples
+    """
+    plt.figure(figsize=(8, 6))
+    for c in curves:
+        fpr, tpr, label = c[0], c[1], c[2]
+        kw = {'label': label, 'color': c[3]} if len(c) > 3 else {'label': label}
+        plt.plot(fpr, tpr, **kw)
+    plt.plot([0, 1], [0, 1], 'k--', label='Random')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title(title)
+    plt.legend(); plt.grid(True)
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
+
+def plot_pr_curves(curves, save_path=None, title="Precision-Recall Curve"):
+    """Plot one or more Precision-Recall curves on a single figure.
+
+    curves: list of (recalls, precisions, legend_label[, color]) tuples
+    """
+    plt.figure(figsize=(8, 6))
+    for c in curves:
+        recalls, precisions, label = c[0], c[1], c[2]
+        kw = {'label': label, 'color': c[3]} if len(c) > 3 else {'label': label}
+        plt.plot(recalls, precisions, **kw)
+    plt.xlabel('Recall')
+    plt.ylabel('Precision')
+    plt.title(title)
+    plt.legend(); plt.grid(True)
+    if save_path:
+        plt.savefig(save_path, dpi=300, bbox_inches='tight')
+
+
+def _compute_and_plot(all_preds, all_labels, save_dir,
+                      title_prefix="", fname_suffix="", confusion_title=None, skip_plots=False):
+    """Compute metrics, print a summary, and optionally save ROC / PR / histogram plots."""
+    all_preds  = np.array(all_preds)
+    all_labels = np.array(all_labels)
+
+    auc = roc_auc_score(all_labels, all_preds)
+    ap  = average_precision_score(all_labels, all_preds)
+
+    preds_bin      = all_preds > 0.5
+    tn, fp, fn, tp = confusion_matrix(all_labels, preds_bin).ravel().tolist()
+    total          = tn + fp + fn + tp
+
+    sep = " " if title_prefix else ""
+    print(f"\nEvaluation Results: {title_prefix}")
+    print(f"  AUC-ROC:     {auc:.4f}")
+    print(f"  Avg Prec:    {ap:.4f}")
+    print(f"  Accuracy:    {(tp + tn) / total:.4f}")
+    print(f"  Recall:      {tp / (tp + fn):.4f}")
+    print(f"  Precision:   {tp / (tp + fp):.4f}")
+    print(f"  Specificity: {tn / (tn + fp):.4f}\n")
+
+    if confusion_title:
+        plot_confusion_matrix(tn, fp, fn, tp, save_dir=save_dir, title=confusion_title)
+
+    if not skip_plots:
+        fpr, tpr, _ = roc_curve(all_labels, all_preds)
+        plot_roc_curves([(fpr, tpr, f'AUC = {auc:.4f}')],
+                        save_path=f"{save_dir}/roc_curve{fname_suffix}.png" if save_dir else None,
+                        title=f'{title_prefix}{sep}ROC Curve')
+
+        precisions, recalls, _ = precision_recall_curve(all_labels, all_preds)
+        plot_pr_curves([(recalls, precisions, f'AP = {ap:.4f}')],
+                       save_path=f"{save_dir}/precision_recall{fname_suffix}.png" if save_dir else None,
+                       title=f'{title_prefix}{sep}Precision-Recall Curve')
+
+        neg_preds = all_preds[all_labels == 0]
+        pos_preds = all_preds[all_labels == 1]
+        bins = np.linspace(0, 1, 21)
+        plt.figure(figsize=(8, 6))
+        plt.hist(neg_preds, bins, label=f'Negative (0)', alpha=0.6, color="blue", density=True)
+        plt.hist(pos_preds, bins, label=f'Positive (1)', alpha=0.6, color="red", density=True)
+        plt.xlabel('Prediction prob (model output)')
+        plt.ylabel('Density')
+        plt.title(f'{title_prefix}{sep}Prediction probs distribution')
+        plt.legend(); plt.grid(True)
+        if save_dir:
+            plt.savefig(f"{save_dir}/preds_hist{fname_suffix}.png", dpi=300, bbox_inches='tight')
+            print(f"Saved figures to {save_dir}:\n roc_curve{fname_suffix}.png\n"
+                  f" precision_recall{fname_suffix}.png\n preds_hist{fname_suffix}.png")
+
+    return auc, ap, all_preds, all_labels
+
+
 def evaluate_model(model, test_loader, device='cpu', save_dir=None):
     """
     Evaluate a model on a dataloader. Prints metrics and plots ROC / PR curves.
-
-    Predictions are raw logits; threshold > 0 is used for binary metrics
-    (equivalent to sigmoid probability > 0.5).
-
-    Args:
-        model:       trained model
-        test_loader: DataLoader over the evaluation set
-        device:      device to run inference on
-        save_dir:    if provided, saves roc_curve.png and precision_recall.png here
 
     Returns:
         auc, ap, all_preds, all_labels
@@ -80,164 +162,80 @@ def evaluate_model(model, test_loader, device='cpu', save_dir=None):
             all_preds.extend(predictions.cpu().numpy())
             all_labels.extend(labels.numpy())
 
-    all_preds = np.array(all_preds)
-    all_labels = np.array(all_labels)
+    return _compute_and_plot(all_preds, all_labels, save_dir)
 
-    auc = roc_auc_score(all_labels, all_preds)
-    ap  = average_precision_score(all_labels, all_preds)
-
-    # Threshold at 0.5
-    preds_bin            = all_preds > 0.5
-    tn, fp, fn, tp       = confusion_matrix(all_labels, preds_bin).ravel().tolist()
-    total                = tn + fp + fn + tp
-
-    print(f"\nEvaluation Results:")
-    print(f"  AUC-ROC:     {auc:.4f}")
-    print(f"  Avg Prec:    {ap:.4f}")
-    print(f"  Accuracy:    {(tp + tn) / total:.4f}")
-    print(f"  Recall:      {tp / (tp + fn):.4f}")
-    print(f"  Precision:   {tp / (tp + fp):.4f}")
-    print(f"  Specificity: {tn / (tn + fp):.4f}\n")
-
-    # ROC curve
-    fpr, tpr, _ = roc_curve(all_labels, all_preds)
-    plt.figure(figsize=(8, 6))
-    plt.plot(fpr, tpr, label=f'AUC = {auc:.4f}')
-    plt.plot([0, 1], [0, 1], 'k--', label='Random')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve')
-    plt.legend(); plt.grid(True)
-    if save_dir:
-        plt.savefig(f"{save_dir}/roc_curve.png", dpi=300, bbox_inches='tight')
-
-    # Precision-Recall curve
-    precisions, recalls, _ = precision_recall_curve(all_labels, all_preds)
-    plt.figure(figsize=(8, 6))
-    plt.plot(recalls, precisions, label=f'AP = {ap:.4f}')
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.legend(); plt.grid(True)
-    if save_dir:
-        plt.savefig(f"{save_dir}/precision_recall.png", dpi=300, bbox_inches='tight')
-
-    # Distribution of prediction probs (model output)
-    neg_preds = all_preds[all_labels == 0]
-    pos_preds = all_preds[all_labels == 1]
-    bins = np.linspace(0,1,21)
-    plt.figure(figsize=(8, 6))
-    plt.hist(neg_preds, bins, label=f'Negative (0)', alpha=0.6, color="blue", density=True)
-    plt.hist(pos_preds, bins, label=f'Positive (1)', alpha=0.6, color="red", density=True)
-    plt.xlabel('Prediction prob (model output)')
-    plt.ylabel('Density')
-    plt.title('Prediction probs distribution')
-    plt.legend(); plt.grid(True)
-    if save_dir:
-        plt.savefig(f"{save_dir}/preds_hist.png", dpi=300, bbox_inches='tight')
-        print(f"Saved figures to {save_dir}:\n roc_curve.png\n precision_recall.png\n preds_hist.png")
-
-    return auc, ap, all_preds, all_labels
-
-def evaluate_inductive_model(model, test_data, test_proteins, protein_to_idx, batch_size=512, num_workers=0, device='cpu', save_dir=None):
+def evaluate_inductive_model_separately(model, test_data, test_proteins, protein_to_idx, batch_size=512, num_workers=0, device='cpu', save_dir=None):
     """
-    Evaluate a model that was trained inductively on a test-set. Prints metrics and plots ROC / PR curves.
-
-    Thresholds predictions from model at 0.5 for binary metrics
-
-    Args:
-        model:          trained model
-        test_data:      pandas DataFrame of the test interactions
-        test_proteins:  frozenset of test proteins
-        protein_to_idx: dict mapping (protein ID -> index)
-        batch_size:     batch_size used in testloader
-        num_workers:    num_workers used in testloader
-        device:         device to run inference on
-        save_dir:       if provided, saves roc_curve.png and precision_recall.png here
+    Evaluate a model trained inductively on the test set, stratified by whether
+    both or only one endpoint is unseen. Prints per-class metrics and saves
+    combined ROC / PR plots plus a full-set prediction histogram.
 
     Returns:
-        auc, ap, all_preds, all_labels
+        auc1, ap1 (both-unseen), auc2, ap2 (one-unseen)
     """
     model.eval()
-    preds1, labels1, preds2, labels2 = [], [], [], []
-    mask = test_data['ensp_1'].isin(test_proteins) & test_data['ensp_2'].isin(test_proteins)
-    test_data1 = test_data[mask]
-    test_data2 = test_data[~mask]
-    dataset1 = ProteinInteractionDataset(test_data1, protein_to_idx)
-    dataset2 = ProteinInteractionDataset(test_data2, protein_to_idx)
-    test_loader1 = DataLoader(dataset=dataset1, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    test_loader2 = DataLoader(dataset=dataset2, batch_size=batch_size, shuffle=False, num_workers=num_workers)
-    with torch.no_grad():
-        for protein1_idx, protein2_idx, labels in test_loader1:
-            predictions = torch.sigmoid(model(protein1_idx.to(device), protein2_idx.to(device)))
-            preds1.extend(predictions.cpu().numpy())
-            labels1.extend(labels.numpy())
-        for protein1_idx, protein2_idx, labels in test_loader2:
-            predictions = torch.sigmoid(model(protein1_idx.to(device), protein2_idx.to(device)))
-            preds2.extend(predictions.cpu().numpy())
-            labels2.extend(labels.numpy())
-    preds1 = np.array(preds1)
-    labels1 = np.array(labels1)
-    preds2 = np.array(preds2)
-    labels2 = np.array(labels2)
 
-    auc1 = roc_auc_score(labels1, preds1)
-    ap1  = average_precision_score(labels1, preds1)
-    auc2 = roc_auc_score(labels2, preds2)
-    ap2  = average_precision_score(labels2, preds2)
+    def _infer(split_df):
+        loader = DataLoader(ProteinInteractionDataset(split_df, protein_to_idx),
+                            batch_size=batch_size, shuffle=False, num_workers=num_workers)
+        preds, labels = [], []
+        with torch.no_grad():
+            for p1, p2, lab in loader:
+                preds.extend(torch.sigmoid(model(p1.to(device), p2.to(device))).cpu().numpy())
+                labels.extend(lab.numpy())
+        return np.array(preds), np.array(labels)
 
-    # Threshold at 0.5
-    preds1_bin            = preds1 > 0.5
-    tn1, fp1, fn1, tp1       = confusion_matrix(labels1, preds1_bin).ravel().tolist()
-    total1                = tn1 + fp1 + fn1 + tp1
-
-    preds2_bin            = preds2 > 0.5
-    tn2, fp2, fn2, tp2       = confusion_matrix(labels2, preds2_bin).ravel().tolist()
-    total2                = tn2 + fp2 + fn2 + tp2
+    mask            = test_data['ensp_1'].isin(test_proteins) & test_data['ensp_2'].isin(test_proteins)
+    preds1, labels1 = _infer(test_data[mask])
+    preds2, labels2 = _infer(test_data[~mask])
 
     print(f"\nEvaluation Results (for both interaction classes):\n")
+    auc1, ap1, _, _ = _compute_and_plot(preds1, labels1, save_dir,
+                                         title_prefix="Both-unseen",
+                                         confusion_title="Confusion matrix (Both-unseen)",
+                                         skip_plots=True)
+    auc2, ap2, _, _ = _compute_and_plot(preds2, labels2, save_dir,
+                                         title_prefix="One-unseen",
+                                         confusion_title="Confusion matrix (One-unseen)",
+                                         skip_plots=True)
 
-    plot_confusion_matrix(tn1, fp1, fn1, tp1, save_dir=save_dir, title="Confusion matrix (Both-unseen)")
-
-    plot_confusion_matrix(tn2, fp2, fn2, tp2, save_dir=save_dir, title="Confusion matrix (One-unseen)")
-
-    print(f"  \t Class-1 (both unseen) \t Class-2 (one unseen)")
-    print(f"  AUC-ROC: \t{auc1:.4f} \t\t\t{auc2:.4f}")
-    print(f"  Avg Prec: \t{ap1:.4f} \t\t\t{ap2:.4f}")
-    print(f"  Accuracy: \t{(tp1 + tn1) / total1:.4f} \t\t\t{(tp2 + tn2) / total2:.4f}")
-    print(f"  Recall: \t{tp1 / max(tp1 + fn1, 1):.4f} \t\t\t{tp2 / max(tp2 + fn2, 1):.4f}")
-    print(f"  Precision: \t{tp1 / max(tp1 + fp1, 1):.4f} \t\t\t{tp2 / max(tp2 + fp2, 1):.4f}")
-    print(f"  Specificity: \t{tn1 / max(tn1 + fp1, 1):.4f} \t\t\t{tn2 / max(tn2 + fp2, 1):.4f}\n")
-
-    # ROC curve
-    plt.figure(figsize=(8, 6))
     fpr1, tpr1, _ = roc_curve(labels1, preds1)
     fpr2, tpr2, _ = roc_curve(labels2, preds2)
-    plt.plot(fpr1, tpr1, color="red", label=f'AUC = {auc1:.4f} (both unseen)')
-    plt.plot(fpr2, tpr2, color="blue", label=f'AUC = {auc2:.4f} (one unseen)')
-    plt.plot([0, 1], [0, 1], 'k--', label='Random')
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title('ROC Curve')
-    plt.legend(); plt.grid(True)
-    if save_dir:
-        plt.savefig(f"{save_dir}/roc_curves_separated.png", dpi=300, bbox_inches='tight')
+    plot_roc_curves(
+        [(fpr1, tpr1, f'AUC = {auc1:.4f} (both unseen)', 'red'),
+         (fpr2, tpr2, f'AUC = {auc2:.4f} (one unseen)',  'blue')],
+        save_path=f"{save_dir}/roc_curves_separated.png" if save_dir else None,
+    )
 
-    # Precision-Recall curve
-    plt.figure(figsize=(8, 6))
     precisions1, recalls1, _ = precision_recall_curve(labels1, preds1)
     precisions2, recalls2, _ = precision_recall_curve(labels2, preds2)
-    plt.plot(recalls1, precisions1, color="red", label=f'AP = {ap1:.4f} (both unseen)')
-    plt.plot(recalls2, precisions2, color="blue", label=f'AP = {ap2:.4f} (one unseen)')
-    plt.xlabel('Recall')
-    plt.ylabel('Precision')
-    plt.title('Precision-Recall Curve')
-    plt.legend(); plt.grid(True)
+    plot_pr_curves(
+        [(recalls1, precisions1, f'AP = {ap1:.4f} (both unseen)', 'red'),
+         (recalls2, precisions2, f'AP = {ap2:.4f} (one unseen)',  'blue')],
+        save_path=f"{save_dir}/precision_recall_separated.png" if save_dir else None,
+    )
+
     if save_dir:
-        plt.savefig(f"{save_dir}/precision_recall_separated.png", dpi=300, bbox_inches='tight')
-        print(f"Saved figures to {save_dir}:\n roc_curves_separated.png\n precision_recall_separated.png\n Confusion_matrix_(Both-unseen).png\n Confusion_matrix_(One-unseen).png")
+        print(f"Saved figures to {save_dir}:\n roc_curves_separated.png\n precision_recall_separated.png\n"
+              f" Confusion_matrix_(Both-unseen).png\n Confusion_matrix_(One-unseen).png\n preds_hist.png")
 
     return auc1, ap1, auc2, ap2
+
+def evaluate_gene_gene(model, gene_gene_loader, device, save_dir):
+    model.eval()
+    all_preds, all_labels = [], []
+
+    print("\nEvaluating gene-gene interactions\n")
+
+    with torch.no_grad():
+        for gene1_idx, gene2_idx, labels in gene_gene_loader:
+            predictions = torch.sigmoid(model.forward_gene_gene(gene1_idx.to(device), gene2_idx.to(device)))
+            all_preds.extend(predictions.cpu().numpy())
+            all_labels.extend(labels.numpy())
+
+    return _compute_and_plot(all_preds, all_labels, save_dir,
+                             title_prefix="Gene-Gene", fname_suffix="_gg",
+                             confusion_title="Confusion matrix (Gene-Gene)")
 
 def plot_confusion_matrix(tn, fp, fn, tp, save_dir=None, title="Confusion Matrix"):
     total = tn + fp + fn + tp
@@ -275,15 +273,3 @@ def plot_confusion_matrix(tn, fp, fn, tp, save_dir=None, title="Confusion Matrix
         fname = "_".join(title.split(" "))
         plt.savefig(f"{save_dir}/{fname}.png", dpi=300, bbox_inches='tight')
 
-if __name__ == "__main__":
-    model_dir = "models/IND_MM_20260423_123332"
-    model_path = model_dir + "/model.pt"
-    model, _, _ = load_model(model_path=model_path)
-
-    from src.data_scripts.isoform_pairs import load_and_prepare_data, load_and_prepare_data_inductive
-    csv_path = "data/results_PHYSICAL_Prob_Model_16_02_26.csv"
-    _, _, _, test_data, protein_to_idx, _, _, _, _, test_proteins = load_and_prepare_data_inductive(csv_file=csv_path)
-    test_loader = DataLoader(ProteinInteractionDataset(test_data, protein_to_idx), batch_size=512, num_workers=4, shuffle=False)
-
-    auc, ap, all_preds, all_labels = evaluate_model(model, test_loader, save_dir=model_dir)
-    auc1, ap1, auc2, ap2 = evaluate_inductive_model(model, test_data, test_proteins, protein_to_idx, batch_size=512, num_workers=4, save_dir=model_dir)

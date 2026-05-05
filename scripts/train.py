@@ -33,13 +33,12 @@ from src.data_scripts.isoform_pairs import (
     ProteinInteractionDataset,
     load_and_prepare_data,
     load_and_prepare_data_inductive,
-    load_and_prepare_data_inductive_gene,
     diagnose_split,
     diagnose_split_inductive,
 )
 from src.data_scripts.gene_isoform_pairs import GeneIsoformDataset, prepare_gene_isoform_splits
 from src.data_scripts.gene_pairs import GeneGeneDataset, prepare_gene_gene_splits
-from src.training.evaluate import evaluate_model, evaluate_inductive_model
+from src.training.evaluate import evaluate_model, evaluate_inductive_model_separately, evaluate_gene_gene
 
 
 def main():
@@ -98,15 +97,14 @@ def main():
         diagnose_split(train_dataset, val_data, test_data)
 
     elif split_mode in ('inductive', 'inductive_gene'):
-        load_fn = (load_and_prepare_data_inductive if split_mode == 'inductive'
-                   else load_and_prepare_data_inductive_gene)
         (train_dataset, train_data, val_data, test_data,
          protein_to_idx, num_proteins, neg_pos_ratio,
-         train_proteins, val_proteins, test_proteins) = load_fn(
+         train_proteins, val_proteins, test_proteins) = load_and_prepare_data_inductive(
             d['path'],
             test_size=test_fraction,
             val_size=val_fraction,
             random_state=d['random_state'],
+            gene_level=(split_mode == 'inductive_gene'),
         )
         held_out_isoforms = val_proteins | test_proteins
         print(f"\n  Isoforms: {num_proteins:,}  |  "
@@ -163,7 +161,7 @@ def main():
         # ── Gene–gene STRING ────────────────────────────────────────────────
         if mm.get('lambda_gene_gene', 0) > 0:
             print("\nStep 2c: Building gene–gene STRING interaction data...")
-            gene_gene_train, _, _, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
+            gene_gene_train, gene_gene_val, gene_gene_test, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
                 gene_to_idx, train_data, val_data, test_data,
                 inductive=is_inductive,
             )
@@ -172,6 +170,11 @@ def main():
                   f"gene–gene pos_weight (auto): {gene_gene_ratio:.1f}")
             gene_gene_loader = DataLoader(
                 GeneGeneDataset(gene_gene_train),
+                batch_size=mm_batch, shuffle=True,
+                num_workers=t['num_workers'],
+            )
+            gene_gene_testloader = DataLoader(
+                GeneGeneDataset(gene_gene_test),
                 batch_size=mm_batch, shuffle=True,
                 num_workers=t['num_workers'],
             )
@@ -299,7 +302,9 @@ def main():
     print("\nStep 6: Evaluating on test set...")
     auc, ap, _, _ = evaluate_model(model, test_loader, device=device, save_dir=save_dir)
     if split_mode in ('inductive', 'inductive_gene'):
-        auc1, ap1, auc2, ap2 = evaluate_inductive_model(model, test_data, test_proteins, protein_to_idx, batch_size=t['batch_size'], num_workers=t['num_workers'], device=device, save_dir=save_dir)
+        auc1, ap1, auc2, ap2 = evaluate_inductive_model_separately(model, test_data, test_proteins, protein_to_idx, batch_size=t['batch_size'], num_workers=t['num_workers'], device=device, save_dir=save_dir)
+    if model_type == 'multimodal' and mm.get('lambda_gene_gene', 0) > 0:
+        evaluate_gene_gene(model, gene_gene_loader=gene_gene_testloader, device=device, save_dir=save_dir)
 
     # =========================================================================
     # 8. Save checkpoint
@@ -314,7 +319,6 @@ def main():
         'split_mode':       split_mode,
         'test_auc':         auc,
         'test_ap':          ap,
-        'use_residuals':    True,
     }
     if split_mode in ('inductive', 'inductive_gene'):
         checkpoint.update({
@@ -326,6 +330,7 @@ def main():
         checkpoint.update({
             'gene_to_idx':      gene_to_idx,
             'num_genes':        num_genes,
+            'use_residuals':    use_residuals,
             'lambda_iso_iso':   mm['lambda_iso_iso'],
             'lambda_gene_iso':  mm['lambda_gene_iso'],
             'neg_ratio':        mm['neg_ratio'],

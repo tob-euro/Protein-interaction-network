@@ -73,19 +73,17 @@ def load_and_prepare_data(csv_file, test_size=0.2, val_size=0.1, random_state=42
 # Inductive isoform-level split
 # =============================================================================
 
-def load_and_prepare_data_inductive(csv_file, test_size=0.2, val_size=0.1, random_state=42):
+def load_and_prepare_data_inductive(csv_file, test_size=0.2, val_size=0.1, random_state=42,
+                                     gene_level=False):
     """
-    Load protein interaction data with isoform-level splitting for inductive learning.
+    Load protein interaction data with inductive splitting.
 
-    Each isoform is randomly assigned to exactly one partition (train / val / test).
-    A pair (i, j) is placed in the 'hardest' split of the two isoforms:
-        both in train  → train
-        either in val  → val   (neither in test)
-        either in test → test
-
-    Val and test therefore exclusively contain interactions involving at least one
-    isoform that was never seen during training, enabling evaluation of true
-    inductive generalisation.
+    gene_level=False (default): each isoform is randomly assigned to exactly one
+        partition (train / val / test). A pair (i, j) lands in the 'hardest' split
+        of the two isoforms.
+    gene_level=True: genes are partitioned; all isoforms of a gene land in the same
+        split, eliminating within-gene data leakage. A pair lands in the hardest
+        split of the two genes.
 
     Returns:
         train_dataset, train_data, val_data, test_data,
@@ -100,116 +98,58 @@ def load_and_prepare_data_inductive(csv_file, test_size=0.2, val_size=0.1, rando
     print(f"Positive interactions: {int(pos_interactions)} "
           f"({pos_interactions / total_interactions * 100:.2f}%)")
 
-    # Build vocabulary from full dataset (all isoforms get an embedding index)
     all_proteins   = sorted(set(df['ensp_1']).union(set(df['ensp_2'])))
     protein_to_idx = {p: i for i, p in enumerate(all_proteins)}
     num_proteins   = len(all_proteins)
     print(f"Total unique isoforms: {num_proteins:,}")
 
-    # Randomly partition isoforms into train / val / test
-    rng         = np.random.default_rng(random_state)
-    protein_arr = np.array(all_proteins)
-    perm        = rng.permutation(num_proteins)
+    rng = np.random.default_rng(random_state)
 
-    n_test = int(num_proteins * test_size)
-    n_val  = int(num_proteins * val_size)
+    if gene_level:
+        ensp_to_gene = {}
+        for ensp, gene in zip(df['ensp_1'], df['gene_1']):
+            ensp_to_gene[ensp] = gene
+        for ensp, gene in zip(df['ensp_2'], df['gene_2']):
+            ensp_to_gene[ensp] = gene
 
-    test_proteins  = frozenset(protein_arr[perm[:n_test]])
-    val_proteins   = frozenset(protein_arr[perm[n_test:n_test + n_val]])
-    train_proteins = frozenset(protein_arr[perm[n_test + n_val:]])
+        all_genes = np.array(sorted(set(ensp_to_gene.values())))
+        num_genes = len(all_genes)
+        perm      = rng.permutation(num_genes)
+        n_test    = int(num_genes * test_size)
+        n_val     = int(num_genes * val_size)
 
-    print(f"Isoform partition: {len(train_proteins):,} train  "
-          f"{len(val_proteins):,} val  {len(test_proteins):,} test")
+        test_genes  = frozenset(all_genes[perm[:n_test]])
+        val_genes   = frozenset(all_genes[perm[n_test:n_test + n_val]])
 
-    # Assign interactions to splits (vectorised)
-    # rank: 0 = train, 1 = val, 2 = test
-    rank1     = np.where(df['ensp_1'].isin(test_proteins), 2,
-                np.where(df['ensp_1'].isin(val_proteins),  1, 0))
-    rank2     = np.where(df['ensp_2'].isin(test_proteins), 2,
-                np.where(df['ensp_2'].isin(val_proteins),  1, 0))
-    pair_rank = np.maximum(rank1, rank2)
+        print(f"Gene partition: {num_genes - n_test - n_val:,} train  {n_val:,} val  {n_test:,} test")
 
-    train_data = df[pair_rank == 0].reset_index(drop=True)
-    val_data   = df[pair_rank == 1].reset_index(drop=True)
-    test_data  = df[pair_rank == 2].reset_index(drop=True)
-
-    print(f"Interaction split: train {len(train_data):,}  val {len(val_data):,}  test {len(test_data):,}")
-    for name, split in [('Train', train_data), ('Val', val_data), ('Test', test_data)]:
-        if len(split):
-            n_pos = int(split['interact'].sum())
-            print(f"  {name}: {n_pos:,} pos  {len(split) - n_pos:,} neg  "
-                  f"({100 * n_pos / len(split):.2f}% positive)")
-
-    neg_pos_ratio = ((len(train_data) - int(train_data['interact'].sum()))
-                     / max(int(train_data['interact'].sum()), 1))
-
-    train_dataset = ProteinInteractionDataset(train_data, protein_to_idx)
-
-    return (train_dataset, train_data, val_data, test_data,
-            protein_to_idx, num_proteins, neg_pos_ratio,
-            train_proteins, val_proteins, test_proteins)
-
-
-# =============================================================================
-# Inductive gene-level split
-# =============================================================================
-
-def load_and_prepare_data_inductive_gene(csv_file, test_size=0.2, val_size=0.1, random_state=42):
-    """
-    Load protein interaction data with gene-level splitting for inductive learning.
-
-    Genes are randomly partitioned into train / val / test. All isoforms of a
-    gene always land in the same partition, eliminating within-gene data leakage.
-    A pair (i, j) is placed in the 'hardest' split of the two endpoints' genes:
-        both genes in train → train
-        either gene in val  → val   (neither in test)
-        either gene in test → test
-
-    Returns the same signature as load_and_prepare_data_inductive so all
-    downstream code is compatible.
-    """
-    df = pd.read_csv(csv_file)
-
-    total_interactions = len(df)
-    pos_interactions   = df['interact'].sum()
-    print(f"Loaded {total_interactions} protein pairs")
-    print(f"Positive interactions: {int(pos_interactions)} "
-          f"({pos_interactions / total_interactions * 100:.2f}%)")
-
-    # Build isoform vocabulary
-    all_proteins   = sorted(set(df['ensp_1']).union(set(df['ensp_2'])))
-    protein_to_idx = {p: i for i, p in enumerate(all_proteins)}
-    num_proteins   = len(all_proteins)
-    print(f"Total unique isoforms: {num_proteins:,}")
-
-    # Build ensp → gene mapping (each isoform belongs to exactly one gene)
-    ensp_to_gene = {}
-    for ensp, gene in zip(df['ensp_1'], df['gene_1']):
-        ensp_to_gene[ensp] = gene
-    for ensp, gene in zip(df['ensp_2'], df['gene_2']):
-        ensp_to_gene[ensp] = gene
-
-    # Partition GENES into train / val / test
-    all_genes = np.array(sorted(set(ensp_to_gene.values())))
-    num_genes = len(all_genes)
-    rng  = np.random.default_rng(random_state)
-    perm = rng.permutation(num_genes)
-
-    n_test = int(num_genes * test_size)
-    n_val  = int(num_genes * val_size)
-
-    test_genes  = frozenset(all_genes[perm[:n_test]])
-    val_genes   = frozenset(all_genes[perm[n_test:n_test + n_val]])
-
-    print(f"Gene partition: {num_genes - n_test - n_val:,} train  {n_val:,} val  {n_test:,} test")
-
-    # Assign pairs to splits via gene-rank of each endpoint (vectorised)
-    rank1     = np.where(df['gene_1'].isin(test_genes), 2,
+        rank1 = np.where(df['gene_1'].isin(test_genes), 2,
                 np.where(df['gene_1'].isin(val_genes),  1, 0))
-    rank2     = np.where(df['gene_2'].isin(test_genes), 2,
+        rank2 = np.where(df['gene_2'].isin(test_genes), 2,
                 np.where(df['gene_2'].isin(val_genes),  1, 0))
-    pair_rank = np.maximum(rank1, rank2)
 
+        test_proteins  = frozenset(p for p in all_proteins if ensp_to_gene.get(p) in test_genes)
+        val_proteins   = frozenset(p for p in all_proteins if ensp_to_gene.get(p) in val_genes)
+        train_proteins = frozenset(all_proteins) - test_proteins - val_proteins
+    else:
+        protein_arr = np.array(all_proteins)
+        perm        = rng.permutation(num_proteins)
+        n_test      = int(num_proteins * test_size)
+        n_val       = int(num_proteins * val_size)
+
+        test_proteins  = frozenset(protein_arr[perm[:n_test]])
+        val_proteins   = frozenset(protein_arr[perm[n_test:n_test + n_val]])
+        train_proteins = frozenset(protein_arr[perm[n_test + n_val:]])
+
+        rank1 = np.where(df['ensp_1'].isin(test_proteins), 2,
+                np.where(df['ensp_1'].isin(val_proteins),  1, 0))
+        rank2 = np.where(df['ensp_2'].isin(test_proteins), 2,
+                np.where(df['ensp_2'].isin(val_proteins),  1, 0))
+
+    print(f"Isoform partition: {len(train_proteins):,} train  "
+          f"{len(val_proteins):,} val  {len(test_proteins):,} test")
+
+    pair_rank  = np.maximum(rank1, rank2)
     train_data = df[pair_rank == 0].reset_index(drop=True)
     val_data   = df[pair_rank == 1].reset_index(drop=True)
     test_data  = df[pair_rank == 2].reset_index(drop=True)
@@ -220,14 +160,6 @@ def load_and_prepare_data_inductive_gene(csv_file, test_size=0.2, val_size=0.1, 
             n_pos = int(split['interact'].sum())
             print(f"  {name}: {n_pos:,} pos  {len(split) - n_pos:,} neg  "
                   f"({100 * n_pos / len(split):.2f}% positive)")
-
-    # Derive isoform-level partition frozensets (compatible with downstream code)
-    test_proteins  = frozenset(p for p in all_proteins if ensp_to_gene.get(p) in test_genes)
-    val_proteins   = frozenset(p for p in all_proteins if ensp_to_gene.get(p) in val_genes)
-    train_proteins = frozenset(all_proteins) - test_proteins - val_proteins
-
-    print(f"Isoform partition: {len(train_proteins):,} train  "
-          f"{len(val_proteins):,} val  {len(test_proteins):,} test")
 
     neg_pos_ratio = ((len(train_data) - int(train_data['interact'].sum()))
                      / max(int(train_data['interact'].sum()), 1))

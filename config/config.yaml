@@ -8,7 +8,7 @@ data:
 
 model:
   type: multimodal        # ldm | multimodal
-  latent_dim: 5
+  latent_dim: 32
 
 # ── Split ────────────────────────────────────────────────────────────────────
 # transductive:   gene-pair level split — all isoforms appear in training pairs
@@ -28,14 +28,14 @@ training:
   learning_rate: 0.001
   batch_size: 512
   weight_decay: 1.0e-5
-  num_workers: 0          # set to 0 on macOS/MPS
-  patience: 5            # epochs without val AP improvement before early stopping
+  num_workers: 4          # set to 0 on macOS/MPS
+  patience: 3            # epochs without val AP improvement before early stopping
 
 # ── Multimodal settings (only used when model.type = multimodal) ─────────────
 
 multimodal:
   esmc_path: data/esmc_globemb_noduplicates_15092025.csv
-  use_residuals: false     # add per-isoform residual on top of ESM-C projection
+  use_residuals: False     # add per-isoform residual on top of ESM-C projection
   proj_hidden_dim: 16      # hidden dim of ESM-C projection and random-effect MLPs
   lambda_iso_iso: 1.0      # loss weight: iso–iso pairs
   lambda_gene_iso: 0.5     # loss weight: gene–iso bipartite

@@ -115,6 +115,7 @@ def find_hub_proteins(G, top_n=10):
 
     return sorted_proteins[:top_n]
 
+
 def analyze_bipartite_network(df):
     gene_isoforms = defaultdict(set)
     
@@ -141,7 +142,6 @@ def analyze_bipartite_network(df):
     return degrees
 
 
-
 def plot_adjacency_matrix(G):
     A = nx.to_numpy_array(G)
     fig, ax = plt.subplots(figsize=(6, 6))
@@ -152,6 +152,7 @@ def plot_adjacency_matrix(G):
     plt.savefig(f"{FIGURES_DIR}/adjacency_matrix.png", dpi=300, bbox_inches='tight')
     plt.show()
     print(f"Saved: {FIGURES_DIR}/adjacency_matrix.png")
+
 
 def dataframe_analysis(df, save_path):
     pi = df["pi"].to_numpy()
@@ -254,10 +255,6 @@ def main(csv_file):
     degrees_gene = analyze_network_statistics(G_gene)
     plot_degree_distribution(degrees_gene, save_path="GeneGene_degree_distribution.png")
     find_hub_proteins(G_gene, top_n=20)
-
-
-
-
 
 
 if __name__ == "__main__":
