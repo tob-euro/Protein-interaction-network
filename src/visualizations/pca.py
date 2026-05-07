@@ -1,24 +1,22 @@
-import pandas as pd
-import numpy as np
 import matplotlib.pyplot as plt
-from sklearn.decomposition import PCA
-from mpl_toolkits.mplot3d import Axes3D
 import networkx as nx
+import numpy as np
+from sklearn.decomposition import PCA
+
 
 def calculate_node_degrees(data, protein_to_idx):
-    """Calculate degree for each protein
-    
+    """Per-protein degree (positive interactions only).
+
     Args:
-        data: pandas DataFrame (for calculating degrees)
-        protein_to_idx: dictionary (Protein id -> index mapping)
-    
+        data: DataFrame with ensp_1, ensp_2, interact columns.
+        protein_to_idx: isoform → index mapping.
+
     Returns:
-        degrees (numpy array)"""
+        np.ndarray of shape (num_proteins,) with degree per index.
+    """
     G = nx.Graph()
-    positive_interactions = data[data['interact'] == 1]
-    for _, row in positive_interactions.iterrows():
+    for _, row in data[data['interact'] == 1].iterrows():
         G.add_edge(row['ensp_1'], row['ensp_2'])
-    
     degrees = np.zeros(len(protein_to_idx))
     for protein, idx in protein_to_idx.items():
         if protein in G:
@@ -27,176 +25,118 @@ def calculate_node_degrees(data, protein_to_idx):
 
 
 def visualize_latent_space_pca(model, protein_to_idx, data=None, degrees=None,
-                                n_components=2, sample_size=None,
-                                idx_to_protein=None, colormap='viridis', show_variance=True):
-    """
-    Visualize high-dimensional latent space using PCA
-    
+                               n_components=2, sample_size=None,
+                               idx_to_protein=None, colormap='viridis',
+                               show_variance=True):
+    """PCA scatter of latent embeddings; point size and colour scale with degree.
+
     Args:
-        model: Trained LatentDistanceModel
-        protein_to_idx: Protein to index mapping
-        data: DataFrame (for calculating degrees)
-        degrees: Pre-computed degrees (optional)
-        n_components: Number of PCA components (2 or 3)
-        sample_size: Number of proteins to sample (None = all)
-        idx_to_protein: Index to protein mapping (for labels)
-        colormap: Matplotlib colormap
-        show_variance: Show explained variance in title
-    
+        model: a trained LDM-family model (provides .get_embeddings()).
+        protein_to_idx: isoform → index mapping.
+        data: optional interaction DataFrame for degree colouring.
+        degrees: pre-computed degree array (overrides `data`).
+        n_components: 2 or 3.
+        sample_size: if set and smaller than the embedding count, sample randomly.
+        idx_to_protein: index → name mapping (currently unused; kept for API parity).
+        colormap: matplotlib colormap name.
+        show_variance: include total explained variance in the title.
+
     Returns:
-        fig, pca_embeddings, pca_model
+        fig, pca_embeddings (n × n_components), pca_model
     """
-    # Get embeddings
-    embeddings = model.get_embeddings()
+    if n_components not in (2, 3):
+        raise ValueError("n_components must be 2 or 3")
+
+    embeddings   = model.get_embeddings()
     original_dim = embeddings.shape[1]
-    
-    print(f"\nPCA Dimensionality Reduction:")
-    print(f"  Original dimension: {original_dim}")
-    print(f"  Target dimension: {n_components}")
-    
-    # Calculate degrees
-    if degrees is None and data is not None:
-        degrees = calculate_node_degrees(data, protein_to_idx)
-    elif degrees is None:
-        degrees = np.ones(embeddings.shape[0])
-    
-    # Sample if needed
+    print(f"\nPCA: {original_dim}D → {n_components}D")
+
+    if degrees is None:
+        degrees = (calculate_node_degrees(data, protein_to_idx)
+                   if data is not None else np.ones(embeddings.shape[0]))
+
     if sample_size is not None and embeddings.shape[0] > sample_size:
-        indices = np.random.choice(embeddings.shape[0], sample_size, replace=False)
-        embeddings_sample = embeddings[indices]
-        degrees_sample = degrees[indices]
-    else:
-        embeddings_sample = embeddings
-        degrees_sample = degrees
-        indices = np.arange(embeddings.shape[0])
-    
-    # Apply PCA
+        idx = np.random.choice(embeddings.shape[0], sample_size, replace=False)
+        embeddings, degrees = embeddings[idx], degrees[idx]
+
     pca = PCA(n_components=n_components, random_state=42)
-    embeddings_pca = pca.fit_transform(embeddings_sample)
-    
-    explained_var = pca.explained_variance_ratio_
-    print(f"  Explained variance: {explained_var}")
-    print(f"  Total variance explained: {explained_var.sum()*100:.2f}%")
-    
-    # Normalize degrees for visualization
-    min_size, max_size = 20, 500
-    if degrees_sample.max() > 0:
-        sizes = min_size + (degrees_sample / degrees_sample.max()) * (max_size - min_size)
-    else:
-        sizes = np.full(len(degrees_sample), min_size)
-    
-    colors = degrees_sample
-    
-    # Create visualization
+    emb_pca = pca.fit_transform(embeddings)
+    var = pca.explained_variance_ratio_
+    print(f"  Explained variance: {var}  total: {var.sum() * 100:.2f}%")
+
+    sizes = (20 + (degrees / degrees.max()) * 480
+             if degrees.max() > 0 else np.full(len(degrees), 20))
+
     if n_components == 2:
         fig, ax = plt.subplots(figsize=(12, 10))
-        
-        scatter = ax.scatter(embeddings_pca[:, 0], embeddings_pca[:, 1],
-                           s=sizes, c=colors, cmap=colormap,
-                           alpha=0.6, edgecolors='black', linewidths=0.5)
-        
-        cbar = plt.colorbar(scatter, ax=ax)
-        cbar.set_label('Number of Interactions', fontsize=12, rotation=270, labelpad=20)
-        
-        ax.set_xlabel(f'PC1 ({explained_var[0]*100:.1f}% variance)', fontsize=12)
-        ax.set_ylabel(f'PC2 ({explained_var[1]*100:.1f}% variance)', fontsize=12)
-        
-        title = f'Latent Space Visualization (PCA: {original_dim}D → 2D)'
-        if show_variance:
-            title += f'\nTotal variance explained: {explained_var.sum()*100:.1f}%'
-        ax.set_title(title, fontsize=14, fontweight='bold')
-        ax.grid(True, alpha=0.3)
-        
-    elif n_components == 3:
-        fig = plt.figure(figsize=(12, 10))
-        ax = fig.add_subplot(111, projection='3d')
-        
-        scatter = ax.scatter(embeddings_pca[:, 0],
-                           embeddings_pca[:, 1],
-                           embeddings_pca[:, 2],
-                           s=sizes, c=colors, cmap=colormap,
-                           alpha=0.6, edgecolors='black', linewidths=0.5)
-        
-        cbar = plt.colorbar(scatter, ax=ax, pad=0.1)
-        cbar.set_label('Number of Interactions', fontsize=12, rotation=270, labelpad=20)
-        
-        ax.set_xlabel(f'PC1 ({explained_var[0]*100:.1f}%)', fontsize=12)
-        ax.set_ylabel(f'PC2 ({explained_var[1]*100:.1f}%)', fontsize=12)
-        ax.set_zlabel(f'PC3 ({explained_var[2]*100:.1f}%)', fontsize=12)
-        
-        title = f'Latent Space Visualization (PCA: {original_dim}D → 3D)'
-        if show_variance:
-            title += f'\nTotal variance: {explained_var.sum()*100:.1f}%'
-        ax.set_title(title, fontsize=14, fontweight='bold')
-    
+        scatter = ax.scatter(emb_pca[:, 0], emb_pca[:, 1],
+                             s=sizes, c=degrees, cmap=colormap,
+                             alpha=0.6, edgecolors='black', linewidths=0.5)
+        plt.colorbar(scatter, ax=ax, label='Number of Interactions')
+        ax.set(xlabel=f'PC1 ({var[0] * 100:.1f}% var)',
+               ylabel=f'PC2 ({var[1] * 100:.1f}% var)')
+        title = f'Latent Space (PCA {original_dim}D → 2D)'
     else:
-        raise ValueError("n_components must be 2 or 3")
-    
+        fig = plt.figure(figsize=(12, 10))
+        ax  = fig.add_subplot(111, projection='3d')
+        scatter = ax.scatter(emb_pca[:, 0], emb_pca[:, 1], emb_pca[:, 2],
+                             s=sizes, c=degrees, cmap=colormap,
+                             alpha=0.6, edgecolors='black', linewidths=0.5)
+        plt.colorbar(scatter, ax=ax, pad=0.1, label='Number of Interactions')
+        ax.set_xlabel(f'PC1 ({var[0] * 100:.1f}%)')
+        ax.set_ylabel(f'PC2 ({var[1] * 100:.1f}%)')
+        ax.set_zlabel(f'PC3 ({var[2] * 100:.1f}%)')
+        title = f'Latent Space (PCA {original_dim}D → 3D)'
+
+    if show_variance:
+        title += f'\nTotal variance: {var.sum() * 100:.1f}%'
+    ax.set_title(title, fontweight='bold')
     plt.tight_layout()
-    
-    return fig, embeddings_pca, pca
+    return fig, emb_pca, pca
 
 
 def visualize_pca_variance(model, max_components=50):
+    """Per-component and cumulative explained variance plots.
+
+    Args:
+        model: a trained LDM-family model (provides .get_embeddings()).
+        max_components: max number of PCs to evaluate.
+
+    Returns:
+        fig, explained_variance_ratio, cumulative_variance
     """
-    Visualize explained variance across PCA components
-    
-    Helps decide how many components to use
-    """
-    embeddings = model.get_embeddings()
+    embeddings   = model.get_embeddings()
     original_dim = embeddings.shape[1]
-    
-    # Calculate PCA with all components
-    n_comp = min(max_components, original_dim, embeddings.shape[0])
-    pca = PCA(n_components=n_comp)
-    pca.fit(embeddings)
-    
-    explained_var = pca.explained_variance_ratio_
-    cumulative_var = np.cumsum(explained_var)
-    
-    # Create plot
+    n_comp       = min(max_components, original_dim, embeddings.shape[0])
+
+    pca = PCA(n_components=n_comp).fit(embeddings)
+    var = pca.explained_variance_ratio_
+    cum = np.cumsum(var)
+
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
-    
-    # Individual variance
-    ax1 = axes[0]
-    ax1.bar(range(1, len(explained_var)+1), explained_var, alpha=0.7, edgecolor='black')
-    ax1.set_xlabel('Principal Component', fontsize=12)
-    ax1.set_ylabel('Explained Variance Ratio', fontsize=12)
-    ax1.set_title('Variance Explained by Each Component', fontsize=13, fontweight='bold')
-    ax1.grid(True, alpha=0.3, axis='y')
-    
-    # Mark first 3 components
-    for i in range(min(3, len(explained_var))):
-        ax1.text(i+1, explained_var[i], f'{explained_var[i]*100:.1f}%',
-                ha='center', va='bottom', fontsize=9)
-    
-    # Cumulative variance
-    ax2 = axes[1]
-    ax2.plot(range(1, len(cumulative_var)+1), cumulative_var, 'b-o', linewidth=2, markersize=4)
-    ax2.axhline(y=0.95, color='r', linestyle='--', label='95% variance', alpha=0.7)
-    ax2.axhline(y=0.90, color='orange', linestyle='--', label='90% variance', alpha=0.7)
-    ax2.set_xlabel('Number of Components', fontsize=12)
-    ax2.set_ylabel('Cumulative Explained Variance', fontsize=12)
-    ax2.set_title('Cumulative Variance Explained', fontsize=13, fontweight='bold')
-    ax2.legend()
-    ax2.grid(True, alpha=0.3)
-    ax2.set_ylim([0, 1.05])
-    
-    # Find how many components for 90% and 95% variance
-    n_90 = np.argmax(cumulative_var >= 0.90) + 1
-    n_95 = np.argmax(cumulative_var >= 0.95) + 1
-    
-    ax2.text(n_90, 0.90, f'{n_90} PCs', ha='center', va='bottom', fontsize=9,
-            bbox=dict(boxstyle='round', facecolor='orange', alpha=0.3))
-    ax2.text(n_95, 0.95, f'{n_95} PCs', ha='center', va='bottom', fontsize=9,
-            bbox=dict(boxstyle='round', facecolor='red', alpha=0.3))
-    
+    axes[0].bar(range(1, len(var) + 1), var, alpha=0.7, edgecolor='black')
+    axes[0].set(xlabel='Principal Component', ylabel='Explained Variance Ratio',
+                title='Variance per Component')
+    axes[0].grid(True, alpha=0.3, axis='y')
+    for i in range(min(3, len(var))):
+        axes[0].text(i + 1, var[i], f'{var[i] * 100:.1f}%',
+                     ha='center', va='bottom', fontsize=9)
+
+    axes[1].plot(range(1, len(cum) + 1), cum, 'b-o', linewidth=2, markersize=4)
+    axes[1].axhline(0.95, color='r',      linestyle='--', alpha=0.7, label='95% variance')
+    axes[1].axhline(0.90, color='orange', linestyle='--', alpha=0.7, label='90% variance')
+    axes[1].set(xlabel='Number of Components', ylabel='Cumulative Variance',
+                title='Cumulative Variance', ylim=[0, 1.05])
+    axes[1].legend(); axes[1].grid(True, alpha=0.3)
+
+    n_90 = int(np.argmax(cum >= 0.90)) + 1
+    n_95 = int(np.argmax(cum >= 0.95)) + 1
+    axes[1].text(n_90, 0.90, f'{n_90} PCs', ha='center', va='bottom', fontsize=9,
+                 bbox=dict(boxstyle='round', facecolor='orange', alpha=0.3))
+    axes[1].text(n_95, 0.95, f'{n_95} PCs', ha='center', va='bottom', fontsize=9,
+                 bbox=dict(boxstyle='round', facecolor='red', alpha=0.3))
+
     plt.tight_layout()
-    
-    print(f"\nPCA Variance Analysis:")
-    print(f"  Original dimensions: {original_dim}")
-    print(f"  Components for 90% variance: {n_90}")
-    print(f"  Components for 95% variance: {n_95}")
-    print(f"  First 3 PCs explain: {cumulative_var[2]*100:.2f}%")
-    
-    return fig, explained_var, cumulative_var
+    print(f"\nPCA variance: dim={original_dim}  90% at {n_90} PCs  95% at {n_95} PCs  "
+          f"first 3 PCs: {cum[2] * 100:.2f}%")
+    return fig, var, cum
