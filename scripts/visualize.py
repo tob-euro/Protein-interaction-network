@@ -6,9 +6,6 @@ import pandas as pd
 import yaml
 
 from src.training.evaluate import load_model
-from src.visualizations.hierarchical_clustering import (
-    plot_cluster_sizes, plot_dendrogram, plot_pca_by_cluster,
-)
 from src.visualizations.pca import visualize_latent_space_pca, visualize_pca_variance
 
 
@@ -51,19 +48,6 @@ def main():
 
     print("\n--- Hierarchical clustering ---")
     n_clusters = v['clustering_n_clusters']
-
-    _, cluster_labels, _ = plot_dendrogram(
-        model, protein_to_idx,
-        truncate_level=v['clustering_truncate_level'],
-        idx_to_protein=idx_to_protein)
-    _save(f"{save_dir}/hierarchical_dendrogram.png")
-
-    plot_cluster_sizes(cluster_labels, n_clusters=n_clusters)
-    _save(f"{save_dir}/cluster_sizes.png")
-
-    plot_pca_by_cluster(model, cluster_labels, n_clusters=n_clusters,
-                        idx_to_protein=idx_to_protein)
-    _save(f"{save_dir}/pca_by_cluster.png")
 
     print(f"\nDone. Figures in: {save_dir}\n")
 
