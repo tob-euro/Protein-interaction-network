@@ -47,14 +47,6 @@ from src.training.evaluate import (
 )
 
 
-def pick_device():
-    if torch.cuda.is_available():
-        return 'cuda'
-    if torch.backends.mps.is_available():
-        return 'mps'
-    return 'cpu'
-
-
 def evaluate_iso_iso_aggregated(model, csv_path, protein_to_idx, device, save_dir,
                                 batch_size=4096):
     """Aggregate iso-iso predictions to the gene level (max over iso-pairs).
@@ -189,7 +181,7 @@ def main():
     parser.add_argument('--batch_size', type=int, default=512)
     args = parser.parse_args()
 
-    device = pick_device()
+    device = 'cuda' if torch.cuda.is_available() else 'mps' if torch.backends.mps.is_available() else 'cpu'
     if args.output is None:
         args.output = os.path.join(os.path.dirname(args.checkpoint), 'rq3')
     os.makedirs(args.output, exist_ok=True)

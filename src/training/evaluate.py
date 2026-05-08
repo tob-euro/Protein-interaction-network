@@ -43,13 +43,12 @@ def load_model(model_path, device='cpu', only_re=False):
               f"λ_gene_iso={checkpoint.get('lambda_gene_iso')}  "
               f"neg_ratio={checkpoint.get('neg_ratio')}")
     else:
-        cls = BaselineLDM if only_re else LatentDistanceModel
-        model = cls(
+        model = LatentDistanceModel(
             num_proteins=checkpoint['num_proteins'],
             latent_dim=checkpoint['latent_dim'],
         )
         model.load_state_dict(checkpoint['model_state_dict'])
-        print(f"Loaded {cls.__name__}: {model_path}")
+        print(f"Loaded LatentDistanceModel: {model_path}")
         print(f"  AUC {checkpoint['test_auc']:.4f}  AP {checkpoint['test_ap']:.4f}  "
               f"latent={checkpoint['latent_dim']}")
 
