@@ -47,7 +47,7 @@ class MultimodalLDM(nn.Module):
         super().__init__()
 
         # ── Isoform branch ────────────────────────────────────────────────────
-        self.register_buffer('esmc_features', esmc_features.float())
+        self.register_buffer('esmc_features', esmc_features.float(), persistent=False)
         esmc_dim       = esmc_features.shape[1]
         self.esmc_proj = ProjectionMLP(esmc_dim, proj_hidden_dim, latent_dim)
         self.re_head   = ProjectionMLP(esmc_dim, proj_hidden_dim, 1)

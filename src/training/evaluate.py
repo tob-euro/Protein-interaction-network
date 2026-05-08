@@ -7,7 +7,7 @@ from sklearn.metrics import (
 )
 from torch.utils.data import DataLoader
 
-from src.data_scripts.isoform_pairs import ProteinInteractionDataset
+from src.data_scripts.isoform_pairs import ProteinInteractionDataset, load_esmc_features
 from src.model_classes.ldm import BaselineLDM, LatentDistanceModel
 from src.model_classes.mm_ldm import MultimodalLDM
 
@@ -27,7 +27,13 @@ def load_model(model_path, device='cpu', only_re=False):
     model_type = checkpoint.get('model_type', 'ldm')
 
     if model_type == 'multimodal':
-        esmc_features = checkpoint['model_state_dict'].get('esmc_features', None)
+        # Old checkpoints stored esmc_features inside state_dict; new ones store
+        # only a path and reload from disk to keep .pt files small.
+        esmc_features = checkpoint['model_state_dict'].pop('esmc_features', None)
+        if esmc_features is None:
+            esmc_features = load_esmc_features(
+                checkpoint['esmc_path'], checkpoint['protein_to_idx']
+            )
         model = MultimodalLDM(
             num_proteins  = checkpoint['num_proteins'],
             num_genes     = checkpoint['num_genes'],

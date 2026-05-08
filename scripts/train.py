@@ -229,6 +229,7 @@ def main():
             'lambda_gene_iso':  lambda_gi,
             'neg_ratio':        neg_ratio,
             'lambda_gene_gene': lambda_gg,
+            'esmc_path':        esmc_path,
         })
 
     torch.save(checkpoint, f"{save_dir}/model.pt")
