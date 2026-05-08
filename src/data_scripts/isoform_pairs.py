@@ -27,20 +27,19 @@ class ProteinInteractionDataset(Dataset):
         )
 
 
-def load_and_prepare_data(csv_file, test_size=0.2, val_size=0.1, random_state=42):
+def load_and_prepare_data(df, test_size=0.2, val_size=0.1, random_state=42):
     """Transductive split: gene-pair level, stratified on positive presence.
 
     Args:
-        csv_file: path to interaction CSV with gene_1, gene_2, ensp_1, ensp_2, interact.
+        df: iso-iso pandas dataframe.
         test_size: fraction of gene pairs held out for testing.
         val_size: fraction of gene pairs held out for validation.
         random_state: seed for the train_test_split.
 
     Returns:
-        train_dataset, train_data, val_data, test_data,
+        train_data, val_data, test_data,
         protein_to_idx, num_proteins, neg_pos_ratio
     """
-    df = pd.read_csv(csv_file)
 
     n_total = len(df)
     n_pos   = int(df['interact'].sum())
@@ -70,28 +69,27 @@ def load_and_prepare_data(csv_file, test_size=0.2, val_size=0.1, random_state=42
     test_data  = df.merge(test_pairs[['gene_1', 'gene_2']],  on=['gene_1', 'gene_2'])
     print(f"Train: {len(train_data)}, Val: {len(val_data)}, Test: {len(test_data)}")
 
-    train_dataset = ProteinInteractionDataset(train_data, protein_to_idx)
-    return (train_dataset, train_data, val_data, test_data,
+    return (train_data, val_data, test_data,
             protein_to_idx, num_proteins, neg_pos_ratio)
 
 
-def load_and_prepare_data_inductive(csv_file, test_size=0.2, val_size=0.1, random_state=42):
+def load_and_prepare_data_inductive(df, test_size=0.2, val_size=0.1, random_state=42):
     """Inductive split: genes are partitioned, so all isoforms of a gene end up
     in the same split. A pair lands in the hardest split of its two endpoints,
     eliminating within-gene leakage.
 
     Args:
-        csv_file: path to interaction CSV.
+        df: iso-iso pandas dataframe.
         test_size: fraction of genes held out for testing.
         val_size: fraction of genes held out for validation.
         random_state: seed for the gene permutation.
 
     Returns:
-        train_dataset, train_data, val_data, test_data,
+        train_data, val_data, test_data,
         protein_to_idx, num_proteins, neg_pos_ratio,
         train_proteins, val_proteins, test_proteins
     """
-    df = pd.read_csv(csv_file)
+
     n_total = len(df)
     n_pos   = int(df['interact'].sum())
     print(f"Loaded {n_total} protein pairs ({n_pos} positives, "
@@ -146,14 +144,24 @@ def load_and_prepare_data_inductive(csv_file, test_size=0.2, val_size=0.1, rando
 
     train_pos = int(train_data['interact'].sum())
     neg_pos_ratio = (len(train_data) - train_pos) / max(train_pos, 1)
-    train_dataset = ProteinInteractionDataset(train_data, protein_to_idx)
 
-    return (train_dataset, train_data, val_data, test_data,
+    return (train_data, val_data, test_data,
             protein_to_idx, num_proteins, neg_pos_ratio,
             train_proteins, val_proteins, test_proteins)
 
+def load_esmc_features(path, protein_to_idx):
+    """Read ESM-C CSV and align rows to protein_to_idx; missing rows zero-filled."""
+    print(f"  Loading ESM-C embeddings from {path} ...")
+    esmc_df      = pd.read_csv(path).set_index('ENSP')
+    ordered_ensp = sorted(protein_to_idx, key=protein_to_idx.get)
+    aligned      = esmc_df.reindex(ordered_ensp)
+    n_missing    = aligned.isna().any(axis=1).sum()
+    print(f"  ESM-C: {aligned.shape[1]}-dim for {len(ordered_ensp):,} proteins "
+          f"({n_missing:,} missing → zero-filled)")
+    return torch.tensor(aligned.fillna(0.0).values, dtype=torch.float32)
 
-def diagnose_split(train_dataset, val_data, test_data):
+
+def diagnose_split(train_data, val_data, test_data):
     """Diagnostics for a transductive (gene-pair level) split.
 
     Args:
@@ -162,7 +170,6 @@ def diagnose_split(train_dataset, val_data, test_data):
         test_data: test DataFrame.
     """
     print("\n--- Split diagnostics ---")
-    train_data = train_dataset.data
     splits = {'Train': train_data, 'Val': val_data, 'Test': test_data}
 
     print("\n[1] Size & class balance")
@@ -218,7 +225,6 @@ def diagnose_split(train_dataset, val_data, test_data):
         d   = list(deg.values())
         print(f"  {name:<6}: {len(pos):,} pos | {len(deg):,} proteins | "
               f"max {max(d)} | mean {np.mean(d):.1f}")
-    print()
 
 
 def diagnose_split_inductive(train_data, val_data, test_data,
