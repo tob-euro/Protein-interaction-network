@@ -122,7 +122,7 @@ class LatentDistanceTrainer:
         """
         criterion = nn.BCEWithLogitsLoss(pos_weight=torch.tensor(pos_weight, dtype=torch.float32).to(self.device))
         optimizer = optim.Adam(self.model.parameters(), lr=lr, weight_decay=weight_decay)
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=5)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2)
 
         best_ap, best_epoch, best_model_state = 0.0, 0, None
 

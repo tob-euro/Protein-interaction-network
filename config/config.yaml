@@ -8,7 +8,7 @@ data:
 
 model:
   type: multimodal        # ldm | multimodal
-  latent_dim: 32
+  latent_dim: 2
 
 # ── Split ────────────────────────────────────────────────────────────────────
 # transductive:   gene-pair level split — all isoforms appear in training pairs
@@ -24,12 +24,12 @@ split:
 # ── Training ─────────────────────────────────────────────────────────────────
 
 training:
-  epochs: 1
+  epochs: 15
   learning_rate: 0.001
-  batch_size: 512
+  batch_size: 1024
   weight_decay: 1.0e-5
   num_workers: 4          # set to 0 on macOS/MPS
-  patience: 3            # epochs without val AP improvement before early stopping
+  patience: 5            # epochs without val AP improvement before early stopping
 
 # ── Multimodal settings (only used when model.type = multimodal) ─────────────
 
@@ -41,7 +41,7 @@ multimodal:
   lambda_gene_iso: 0.5     # loss weight: gene–iso bipartite
   lambda_gene_gene: 0.25   # loss weight: gene–gene STRING (0 = disabled)
   neg_ratio: 10             # negatives per positive gene–iso edge
-  batch_size: 512           # batch size for gene–iso and gene–gene loaders
+  batch_size: 1024           # batch size for gene–iso and gene–gene loaders
   
 # ── Visualization ────────────────────────────────────────────────────────────
 

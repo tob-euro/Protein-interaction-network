@@ -27,7 +27,7 @@ def main():
     print(f"Model    : {args.model_dir}")
     print(f"Saving to: {save_dir}\n")
 
-    model, protein_to_idx, _ = load_model(model_pt, device='cpu')
+    model, protein_to_idx, checkpoint = load_model(model_pt, device='cpu')
     model.eval()
     idx_to_protein = {idx: p for p, idx in protein_to_idx.items()}
 
@@ -47,15 +47,16 @@ def main():
     plt.savefig(f"{save_dir}/latent_pca_2d.png", dpi=300, bbox_inches='tight')
     plt.close(); print(f"Saved: {save_dir}/latent_pca_2d.png")
 
-    fig, _, _ = visualize_latent_space_pca(
-        model, protein_to_idx, data=all_data,
-        n_components=3, idx_to_protein=idx_to_protein)
-    plt.savefig(f"{save_dir}/latent_pca_3d.png", dpi=300, bbox_inches='tight')
-    plt.close(); print(f"Saved: {save_dir}/latent_pca_3d.png")
+    if checkpoint["latent_dim"] > 2:
+        fig, _, _ = visualize_latent_space_pca(
+            model, protein_to_idx, data=all_data,
+            n_components=3, idx_to_protein=idx_to_protein)
+        plt.savefig(f"{save_dir}/latent_pca_3d.png", dpi=300, bbox_inches='tight')
+        plt.close(); print(f"Saved: {save_dir}/latent_pca_3d.png")
 
-    fig, _, _ = visualize_pca_variance(model, max_components=v['pca_max_components'])
-    plt.savefig(f"{save_dir}/pca_variance.png", dpi=300, bbox_inches='tight')
-    plt.close(); print(f"Saved: {save_dir}/pca_variance.png")
+        fig, _, _ = visualize_pca_variance(model, max_components=v['pca_max_components'])
+        plt.savefig(f"{save_dir}/pca_variance.png", dpi=300, bbox_inches='tight')
+        plt.close(); print(f"Saved: {save_dir}/pca_variance.png")
 
     # =========================================================================
     # Hierarchical clustering
