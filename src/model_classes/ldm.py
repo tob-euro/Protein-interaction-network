@@ -15,37 +15,36 @@ class LatentDistanceModel(nn.Module):
 
     def __init__(self, num_proteins, latent_dim=32):
         super().__init__()
-        self.embeddings     = nn.Embedding(num_proteins, latent_dim)
+
+        self.latent_dim = latent_dim
+        if self.latent_dim > 0:
+            self.embeddings     = nn.Embedding(num_proteins, self.latent_dim)
+            nn.init.normal_(self.embeddings.weight,     mean=0, std=0.1)
+        
         self.random_effects = nn.Embedding(num_proteins, 1)
         self.beta           = nn.Parameter(torch.tensor(1.0))
 
-        nn.init.normal_(self.embeddings.weight,     mean=0, std=0.1)
         nn.init.normal_(self.random_effects.weight, mean=0, std=0.1)
 
     def compute_distance(self, z1, z2):
         return torch.norm(z1 - z2, p=2, dim=1)
 
     def forward(self, p1_idx, p2_idx):
-        z1 = self.embeddings(p1_idx)
-        z2 = self.embeddings(p2_idx)
         r1 = self.random_effects(p1_idx).squeeze(-1)
         r2 = self.random_effects(p2_idx).squeeze(-1)
-        return r1 + r2 - self.beta * self.compute_distance(z1, z2)
+        if self.latent_dim == 0:
+            return r1 + r2
+        else:
+            z1 = self.embeddings(p1_idx)
+            z2 = self.embeddings(p2_idx)
+            return r1 + r2 - self.beta * self.compute_distance(z1, z2)
 
     def get_embeddings(self):
+        assert self.latent_dim > 0, "Latent dimension 0"
         return self.embeddings.weight.detach().cpu().numpy()
 
     def get_random_effects(self):
         return self.random_effects.weight.detach().cpu().numpy()
-
-
-class BaselineLDM(LatentDistanceModel):
-    """Random-effects-only baseline: P(Y_ij=1) = sigmoid(r_i + r_j)."""
-
-    def forward(self, p1_idx, p2_idx):
-        r1 = self.random_effects(p1_idx).squeeze(-1)
-        r2 = self.random_effects(p2_idx).squeeze(-1)
-        return r1 + r2
 
 
 class LatentDistanceTrainer:

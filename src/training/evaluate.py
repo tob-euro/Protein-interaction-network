@@ -8,7 +8,7 @@ from sklearn.metrics import (
 from torch.utils.data import DataLoader
 
 from src.data_scripts.isoform_pairs import ProteinInteractionDataset
-from src.model_classes.ldm import BaselineLDM, LatentDistanceModel
+from src.model_classes.ldm import LatentDistanceModel
 from src.model_classes.mm_ldm import MultimodalLDM
 
 
