@@ -24,7 +24,7 @@ multimodal:
   proj_hidden_dim: 16      # hidden dim of ESM-C projection and random-effect MLPs
   lambda_iso_iso: 1.0      # loss weight: iso–iso pairs
   lambda_gene_iso: 0.5     # loss weight: gene–iso bipartite
-  lambda_gene_gene: 0.25   # loss weight: gene–gene STRING (0 = disabled)
+  lambda_gene_gene: 0.0   # loss weight: gene–gene STRING (0 = disabled)
   neg_ratio: 10             # negatives per positive gene–iso edge
 
 

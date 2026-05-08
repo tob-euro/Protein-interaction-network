@@ -33,7 +33,6 @@ def load_model(model_path, device='cpu', only_re=False):
             num_genes     = checkpoint['num_genes'],
             latent_dim    = checkpoint['latent_dim'],
             esmc_features = esmc_features,
-            use_residuals = checkpoint.get('use_residuals', True),
         )
         model.load_state_dict(checkpoint['model_state_dict'])
         print(f"Loaded MultimodalLDM: {model_path}")
