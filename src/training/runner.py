@@ -24,16 +24,112 @@ from src.training.evaluate import (
 )
 
 
-def run_single(cfg, seed, config_path):
+def _build_split_key(d, mm, seed, model_type):
+    """Build a dict that uniquely identifies a set of data splits.
+
+    Includes the source CSV's mtime and size so stale cache entries are
+    automatically missed when the data file changes.
+    """
+    iso_stat = os.stat(d['iso_path'])
+    key = {
+        'mode':          d['mode'],
+        'seed':          int(seed),
+        'val_fraction':  round(float(d['val_fraction']), 8),
+        'test_fraction': round(float(d['test_fraction']), 8),
+        'iso_path':      os.path.abspath(d['iso_path']),
+        'iso_mtime':     iso_stat.st_mtime,
+        'iso_size':      iso_stat.st_size,
+    }
+    if model_type == 'multimodal':
+        key['neg_ratio']     = int(mm['neg_ratio'])
+        key['has_gene_gene'] = mm.get('lambda_gene_gene', 0) > 0
+    return key
+
+
+def _load_all_splits(d, mm, seed, model_type, is_inductive):
+    """Read source CSVs, build all splits, and return a single cacheable dict.
+
+    This is the expensive path: reads the iso-iso CSV, runs train_test_split,
+    samples gene–isoform negatives, and (if active) loads STRING gene–gene data.
+    The returned dict can be passed directly to SplitCache.put().
+    """
+    iso_path = d['iso_path']
+    val_size = d['val_fraction']
+    test_size = d['test_fraction']
+
+    df_full = pd.read_csv(iso_path)
+
+    # ── Iso-iso split ─────────────────────────────────────────────────────────
+    if not is_inductive:
+        (train_data, val_data, test_data,
+         protein_to_idx, num_proteins, neg_pos_ratio) = load_and_prepare_data(
+            df=df_full, test_size=test_size, val_size=val_size, random_state=seed)
+        train_proteins = val_proteins = test_proteins = None
+    else:
+        (train_data, val_data, test_data,
+         protein_to_idx, num_proteins, neg_pos_ratio,
+         train_proteins, val_proteins, test_proteins) = load_and_prepare_data_inductive(
+            df=df_full, test_size=test_size, val_size=val_size, random_state=seed)
+
+    data = {
+        'train_data':     train_data,
+        'val_data':       val_data,
+        'test_data':      test_data,
+        'protein_to_idx': protein_to_idx,
+        'num_proteins':   num_proteins,
+        'neg_pos_ratio':  neg_pos_ratio,
+        'train_proteins': train_proteins,
+        'val_proteins':   val_proteins,
+        'test_proteins':  test_proteins,
+    }
+
+    if model_type != 'multimodal':
+        return data
+
+    # ── Gene–isoform split ────────────────────────────────────────────────────
+    neg_ratio = mm['neg_ratio']
+    lambda_gg = mm.get('lambda_gene_gene', 0)
+    held_out  = (val_proteins | test_proteins) if is_inductive else None
+
+    gene_to_idx, train_gi, _, _, gene_iso_ratio = prepare_gene_isoform_splits(
+        df_full, protein_to_idx, train_data, val_data, test_data,
+        neg_ratio=neg_ratio, random_state=seed,
+        inductive=is_inductive,
+        held_out_isoforms=held_out)
+    data.update({
+        'gene_to_idx':    gene_to_idx,
+        'train_gi':       train_gi,
+        'gene_iso_ratio': gene_iso_ratio,
+    })
+
+    # ── Gene–gene split (STRING) ──────────────────────────────────────────────
+    if lambda_gg > 0:
+        gg_train, _, gg_test, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
+            gene_to_idx, train_data, val_data, test_data, inductive=is_inductive)
+        data.update({
+            'gene_to_idx':      gene_to_idx,   # overwrite with STRING-expanded mapping
+            'gg_train':         gg_train,
+            'gg_test':          gg_test,
+            'gene_gene_ratio':  gene_gene_ratio,
+        })
+
+    return data
+
+
+def run_single(cfg, seed, config_path, split_cache=None):
     """Run one full training + evaluation with the given random seed.
 
     Both the data split and model weight initialisation are seeded with `seed`,
     so different seeds produce genuinely different runs.
 
     Args:
-        cfg:         parsed YAML config dict.
-        seed:        integer random seed (controls split + weight init).
-        config_path: path to the YAML file (copied into the save dir).
+        cfg:          parsed YAML config dict.
+        seed:         integer random seed (controls split + weight init).
+        config_path:  path to the YAML file (copied into the save dir).
+        split_cache:  optional SplitCache instance. When provided, data splits
+                      are loaded from disk on a hit and written on a miss,
+                      eliminating redundant CSV reads and negative sampling
+                      across runs that share the same seed and config.
 
     Returns:
         dict with at minimum:
@@ -75,35 +171,40 @@ def run_single(cfg, seed, config_path):
         print(f"λ_iso_iso={lambda_ii}  λ_gene_iso={lambda_gi}  "
               f"λ_gene_gene={lambda_gg}  neg_ratio={neg_ratio}")
 
-    # ── 1. Iso–iso data ───────────────────────────────────────────────────────
+    # ── 1+2b+2c: Load data (possibly from cache) ─────────────────────────────
     print("\nStep 1: Loading data...")
-    iso_path, esmc_path = d['iso_path'], d['esmc_path']
-    val_size, test_size = d['val_fraction'], d['test_fraction']
-    df_full = pd.read_csv(iso_path)
+    split_key  = _build_split_key(d, mm, seed, model_type) if split_cache else None
+    split_data = split_cache.get(split_key)          if split_cache else None
 
-    if split_mode == 'transductive':
-        (train_data, val_data, test_data,
-         protein_to_idx, num_proteins, neg_pos_ratio) = load_and_prepare_data(
-            df=df_full, test_size=test_size, val_size=val_size, random_state=seed)
-        train_proteins = val_proteins = test_proteins = None
-        held_out_isoforms = set()
-        print(f"\n  Proteins: {num_proteins:,}  |  Train: {len(train_data):,}  "
-              f"Val: {len(val_data):,}  Test: {len(test_data):,}")
-        diagnose_split(train_data, val_data, test_data)
+    if split_data is not None:
+        print(f"  [cache hit — {split_cache.describe(split_key)}]")
+    else:
+        if split_cache:
+            print("  [cache miss — loading from disk and building splits]")
+        split_data = _load_all_splits(d, mm, seed, model_type, is_inductive)
+        if split_cache:
+            cache_path = split_cache.put(split_key, split_data)
+            print(f"  [split saved to cache: {cache_path}]")
 
-    elif is_inductive:
-        (train_data, val_data, test_data,
-         protein_to_idx, num_proteins, neg_pos_ratio,
-         train_proteins, val_proteins, test_proteins) = load_and_prepare_data_inductive(
-            df=df_full, test_size=test_size, val_size=val_size, random_state=seed)
-        held_out_isoforms = val_proteins | test_proteins
-        print(f"\n  Isoforms: {num_proteins:,}  |  Train pairs: {len(train_data):,}  "
-              f"Val: {len(val_data):,}  Test: {len(test_data):,}")
+    # Unpack iso-iso fields
+    train_data     = split_data['train_data']
+    val_data       = split_data['val_data']
+    test_data      = split_data['test_data']
+    protein_to_idx = split_data['protein_to_idx']
+    num_proteins   = split_data['num_proteins']
+    neg_pos_ratio  = split_data['neg_pos_ratio']
+    train_proteins = split_data.get('train_proteins')
+    val_proteins   = split_data.get('val_proteins')
+    test_proteins  = split_data.get('test_proteins')
+    held_out_isoforms = (val_proteins | test_proteins) if is_inductive else set()
+
+    print(f"\n  Proteins: {num_proteins:,}  |  Train: {len(train_data):,}  "
+          f"Val: {len(val_data):,}  Test: {len(test_data):,}")
+    if is_inductive:
         diagnose_split_inductive(train_data, val_data, test_data,
                                  train_proteins, val_proteins, test_proteins)
     else:
-        raise ValueError(f"Unknown split mode: {split_mode!r}. "
-                         "Use 'transductive' or 'inductive'.")
+        diagnose_split(train_data, val_data, test_data)
 
     # ── 2. Dataloaders ────────────────────────────────────────────────────────
     print("Step 2: Creating dataloaders...")
@@ -118,23 +219,23 @@ def run_single(cfg, seed, config_path):
     gene_gene_ratio  = 1.0
 
     if model_type == 'multimodal':
-        print("\nStep 2b: Building gene–isoform bipartite graph...")
-        gene_to_idx, train_gi, _, _, gene_iso_ratio = prepare_gene_isoform_splits(
-            df_full, protein_to_idx, train_data, val_data, test_data,
-            neg_ratio=neg_ratio, random_state=seed,
-            inductive=is_inductive,
-            held_out_isoforms=held_out_isoforms if is_inductive else None)
-        num_genes = len(gene_to_idx)
-        print(f"  Genes: {num_genes:,}  |  gene–iso pos_weight: {gene_iso_ratio:.1f}")
+        gene_to_idx    = split_data['gene_to_idx']
+        train_gi       = split_data['train_gi']
+        gene_iso_ratio = split_data['gene_iso_ratio']
+        num_genes      = len(gene_to_idx)
+        print(f"\nStep 2b: Gene–isoform loader  "
+              f"({num_genes:,} genes  |  pos_weight: {gene_iso_ratio:.1f})")
         gene_iso_loader = DataLoader(GeneIsoformDataset(train_gi),
                                      batch_size=bs, shuffle=True, num_workers=nw)
 
         if lambda_gg > 0:
-            print("\nStep 2c: Building gene–gene STRING data...")
-            gg_train, _, gg_test, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
-                gene_to_idx, train_data, val_data, test_data, inductive=is_inductive)
-            num_genes = len(gene_to_idx)
-            print(f"  Total genes: {num_genes:,}  |  gene–gene pos_weight: {gene_gene_ratio:.1f}")
+            gg_train        = split_data['gg_train']
+            gg_test         = split_data['gg_test']
+            gene_to_idx     = split_data['gene_to_idx']   # STRING-expanded
+            gene_gene_ratio = split_data['gene_gene_ratio']
+            num_genes       = len(gene_to_idx)
+            print(f"\nStep 2c: Gene–gene loader  "
+                  f"({num_genes:,} genes  |  pos_weight: {gene_gene_ratio:.1f})")
             gene_gene_loader     = DataLoader(GeneGeneDataset(gg_train),
                                               batch_size=bs, shuffle=True,  num_workers=nw)
             gene_gene_testloader = DataLoader(GeneGeneDataset(gg_test),
@@ -143,7 +244,7 @@ def run_single(cfg, seed, config_path):
     # ── 3. Model ──────────────────────────────────────────────────────────────
     print("\nStep 3: Initialising model...")
     if model_type == 'multimodal':
-        esmc_features = load_esmc_features(esmc_path, protein_to_idx)
+        esmc_features = load_esmc_features(d['esmc_path'], protein_to_idx)
         if is_inductive:
             print(f"  {len(held_out_isoforms):,} held-out isoforms: ESM-C projection only")
 
@@ -262,7 +363,7 @@ def run_single(cfg, seed, config_path):
             'lambda_gene_iso':  lambda_gi,
             'neg_ratio':        neg_ratio,
             'lambda_gene_gene': lambda_gg,
-            'esmc_path':        esmc_path,
+            'esmc_path':        d['esmc_path'],
         })
 
     torch.save(checkpoint, f"{save_dir}/model.pt")

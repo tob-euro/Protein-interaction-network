@@ -18,6 +18,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
+from src.data_scripts.split_cache import SplitCache
 from src.training.runner import run_single
 
 
@@ -63,24 +64,33 @@ def main():
     parser.add_argument('--output_dir', default=None,
                         help='Directory for aggregate CSV and summary. '
                              'Defaults to <models_dir>/repeated_<timestamp>.')
+    parser.add_argument('--cache',     action='store_true',
+                        help='Enable disk cache for data splits (off by default). '
+                             'Strongly recommended when comparing models over the '
+                             'same seeds, as it avoids re-reading the CSV and '
+                             're-sampling negatives for every run.')
+    parser.add_argument('--cache_dir', default='.cache/data_splits',
+                        help='Directory for cached split files')
     args = parser.parse_args()
 
     with open(args.config) as f:
         cfg = yaml.safe_load(f)
 
-    seeds      = list(range(args.base_seed, args.base_seed + args.n_seeds))
-    models_dir = cfg.get('paths', {}).get('models_dir', 'models')
+    seeds       = list(range(args.base_seed, args.base_seed + args.n_seeds))
+    models_dir  = cfg.get('paths', {}).get('models_dir', 'models')
+    split_cache = SplitCache(args.cache_dir) if args.cache else None
 
     if args.output_dir is None:
-        timestamp      = datetime.now().strftime('%Y%m%d_%H%M%S')
+        timestamp       = datetime.now().strftime('%Y%m%d_%H%M%S')
         args.output_dir = os.path.join(models_dir, f'repeated_{timestamp}')
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"\n{'='*70}")
     print(f"Repeated-split training: {args.n_seeds} runs  "
           f"(seeds {seeds[0]}–{seeds[-1]})")
-    print(f"Config: {args.config}")
-    print(f"Results: {args.output_dir}")
+    print(f"Config:      {args.config}")
+    print(f"Split cache: {'enabled → ' + args.cache_dir if args.cache else 'disabled'}")
+    print(f"Results:     {args.output_dir}")
     print(f"{'='*70}")
 
     all_results = []
@@ -88,7 +98,7 @@ def main():
         print(f"\n{'='*70}")
         print(f"RUN {i + 1}/{args.n_seeds}  (seed={seed})")
         print(f"{'='*70}")
-        metrics = run_single(cfg, seed, args.config)
+        metrics = run_single(cfg, seed, args.config, split_cache=split_cache)
         all_results.append(metrics)
 
     # ── Aggregate statistics ──────────────────────────────────────────────────
