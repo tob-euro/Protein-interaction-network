@@ -31,7 +31,7 @@ def main():
 
     model, protein_to_idx, _ = load_model(model_pt, device='cpu')
     idx_to_protein = {idx: p for p, idx in protein_to_idx.items()}
-    all_data = pd.read_csv(cfg['data']['path'])
+    all_data = pd.read_csv(cfg['data']['iso_path'])
     v = cfg['visualization']
 
     print("--- PCA ---")
@@ -45,9 +45,6 @@ def main():
 
     visualize_pca_variance(model, max_components=v['pca_max_components'])
     _save(f"{save_dir}/pca_variance.png")
-
-    print("\n--- Hierarchical clustering ---")
-    n_clusters = v['clustering_n_clusters']
 
     print(f"\nDone. Figures in: {save_dir}\n")
 

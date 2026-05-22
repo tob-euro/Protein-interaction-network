@@ -251,14 +251,17 @@ def run_single(cfg, seed, config_path, split_cache=None):
     if model_type == 'ldm':
         model = LatentDistanceModel(num_proteins=num_proteins, latent_dim=m['latent_dim'])
     else:
-        proj_hidden_dim = mm.get('proj_hidden_dim', 16)
+        proj_hidden_dim = mm.get('proj_hidden_dim', 42)
         model = MultimodalLDM(
             num_proteins=num_proteins, num_genes=num_genes,
             latent_dim=m['latent_dim'], esmc_features=esmc_features,
             proj_hidden_dim=proj_hidden_dim)
-        print(f"  Gene embeddings: {num_genes:,} × {m['latent_dim']}")
-        print(f"  Isoform positions: ESM-C proj "
-              f"({esmc_features.shape[1]}→{proj_hidden_dim}→{m['latent_dim']})")
+        if m['latent_dim'] > 0:
+            print(f"  Gene embeddings: {num_genes:,} × {m['latent_dim']}")
+            print(f"  Isoform positions: ESM-C proj "
+                  f"({esmc_features.shape[1]}→{proj_hidden_dim}→{m['latent_dim']})")
+        else:
+            print("  Latent distances disabled: random effects and intercepts only")
         print(f"  Random effects: re_head({esmc_features.shape[1]}→{proj_hidden_dim}→1)")
 
     n_total     = sum(p.numel() for p in model.parameters())
@@ -363,6 +366,7 @@ def run_single(cfg, seed, config_path, split_cache=None):
             'lambda_gene_iso':  lambda_gi,
             'neg_ratio':        neg_ratio,
             'lambda_gene_gene': lambda_gg,
+            'proj_hidden_dim':  proj_hidden_dim,
             'esmc_path':        d['esmc_path'],
         })
 

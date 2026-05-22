@@ -9,7 +9,7 @@ data:
 
 model:
   type: multimodal        # ldm | multimodal
-  latent_dim: 0
+  latent_dim: 8
 
 
 training:
