@@ -6,7 +6,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 
 
 class LatentDistanceModel(nn.Module):
-    """Latent Distance Model: P(Y_ij=1) = sigmoid(alpha + r_i + r_j − β·||z_i − z_j||).
+    """Latent Distance Model: P(Y_ij=1) = sigmoid(α + r_i + r_j − ||z_i − z_j||).
 
     Args:
         num_proteins: number of distinct isoforms in the embedding table.
@@ -20,9 +20,9 @@ class LatentDistanceModel(nn.Module):
         if self.latent_dim > 0:
             self.embeddings     = nn.Embedding(num_proteins, self.latent_dim)
             nn.init.normal_(self.embeddings.weight,     mean=0, std=0.1)
-        
+
         self.random_effects = nn.Embedding(num_proteins, 1)
-        self.beta           = nn.Parameter(torch.tensor(1.0))
+        self.alpha          = nn.Parameter(torch.tensor(0.0))
 
         nn.init.normal_(self.random_effects.weight, mean=0, std=0.1)
 
@@ -33,11 +33,11 @@ class LatentDistanceModel(nn.Module):
         r1 = self.random_effects(p1_idx).squeeze(-1)
         r2 = self.random_effects(p2_idx).squeeze(-1)
         if self.latent_dim == 0:
-            return r1 + r2
+            return self.alpha + r1 + r2
         else:
             z1 = self.embeddings(p1_idx)
             z2 = self.embeddings(p2_idx)
-            return r1 + r2 - self.beta * self.compute_distance(z1, z2)
+            return self.alpha + r1 + r2 - self.compute_distance(z1, z2)
 
     def get_embeddings(self):
         assert self.latent_dim > 0, "Latent dimension 0"
@@ -51,7 +51,7 @@ class LatentDistanceTrainer:
     """Trainer for LatentDistanceModel.
 
     Args:
-        model: a LatentDistanceModel (or BaselineLDM) instance.
+        model: a LatentDistanceModel instance.
         device: torch device string ('cpu', 'cuda', 'mps').
     """
 
