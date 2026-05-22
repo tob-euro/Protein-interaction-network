@@ -27,21 +27,24 @@ class ProjectionMLP(nn.Module):
 class MultimodalLDM(nn.Module):
     """Three-modality Latent Distance Model: iso–iso, gene–iso, gene–gene.
 
-    Isoform positions come from an ESM-C projection (with optional per-isoform
-    residual); falls back to a learned embedding table when no ESM-C is provided.
+    Isoform random effects come from an ESM-C projection. When latent_dim > 0,
+    isoform and gene positions are also learned in a shared latent space.
 
     Args:
         num_proteins: number of isoforms (size of the isoform vocabulary).
         num_genes: number of genes (incl. STRING-only entries).
         latent_dim: latent space dimensionality.
-        esmc_features: float tensor (num_proteins, esmc_dim). If None, falls back to a fully-learned embedding table — no inductive capacity.
-        use_residuals: if True, add per-isoform corrections on top of the ESM-C projection. Set False in inductive mode to prevent memorization of seen training isoforms.
+        esmc_features: float tensor (num_proteins, esmc_dim).
         proj_hidden_dim: hidden width of the ESM-C projection and re_head MLPs.
     """
 
-    def __init__(self, num_proteins, num_genes, latent_dim=32, esmc_features=None, proj_hidden_dim=16):
+    def __init__(self, num_proteins, num_genes, latent_dim=32, esmc_features=None, proj_hidden_dim=42):
         super().__init__()
         self.latent_dim = latent_dim
+        self.proj_hidden_dim = proj_hidden_dim
+
+        if esmc_features is None:
+            raise ValueError("MultimodalLDM requires esmc_features")
 
         # ── Isoform branch ────────────────────────────────────────────────────
         self.register_buffer('esmc_features', esmc_features.float(), persistent=False)
@@ -53,11 +56,12 @@ class MultimodalLDM(nn.Module):
         # ── Gene branch (shared across gene–iso and gene–gene tasks) ──────────
         if self.latent_dim > 0:
             self.gene_embeddings     = nn.Embedding(num_genes, latent_dim)
-            for emb in (self.gene_embeddings, self.gene_iso_intercept, self.gene_gene_intercept):
-                nn.init.normal_(emb.weight, mean=0, std=0.1)
         self.gene_iso_intercept  = nn.Embedding(num_genes, 1)
         self.gene_gene_intercept = nn.Embedding(num_genes, 1)
-        for emb in (self.gene_embeddings, self.gene_iso_intercept, self.gene_gene_intercept):
+        gene_layers = [self.gene_iso_intercept, self.gene_gene_intercept]
+        if self.latent_dim > 0:
+            gene_layers.append(self.gene_embeddings)
+        for emb in gene_layers:
             nn.init.normal_(emb.weight, mean=0, std=0.1)
 
         # ── Per-modality global intercepts ────────────────────────────────────
@@ -72,6 +76,8 @@ class MultimodalLDM(nn.Module):
             self.beta_gene_gene = nn.Parameter(torch.tensor(1.0))
 
     def _isoform_latent(self, p_idx):
+        if self.latent_dim == 0:
+            raise ValueError("No isoform latent positions when latent_dim=0")
         return self.esmc_proj(self.esmc_features[p_idx])
 
     def _random_effect(self, p_idx):
@@ -82,25 +88,30 @@ class MultimodalLDM(nn.Module):
 
     def forward_iso_iso(self, p1, p2):
         r1, r2 = self._random_effect(p1),  self._random_effect(p2)
+        base = self.alpha_iso_iso + r1 + r2
         if self.latent_dim == 0:
-            return r1 + r2
+            return base
         z1, z2 = self._isoform_latent(p1), self._isoform_latent(p2)
-        r1, r2 = self._random_effect(p1),  self._random_effect(p2)
-        return self.alpha_iso_iso + r1 + r2 - F.softplus(self.beta_iso_iso) * self.compute_distance(z1, z2)
+        return base - F.softplus(self.beta_iso_iso) * self.compute_distance(z1, z2)
 
     def forward_gene_iso(self, g_idx, p_idx):
         gamma = self.gene_iso_intercept(g_idx).squeeze(-1)
+        base = self.alpha_gene_iso + gamma
         if self.latent_dim == 0:
-            return gamma
+            return base
         u_g   = self.gene_embeddings(g_idx)
         z_i   = self._isoform_latent(p_idx)
-        gamma = self.gene_iso_intercept(g_idx).squeeze(-1)
-        return self.alpha_gene_iso + gamma - F.softplus(self.beta_gene_iso) * self.compute_distance(u_g, z_i)
+        return base - F.softplus(self.beta_gene_iso) * self.compute_distance(u_g, z_i)
 
     def forward_gene_gene(self, g_a, g_b):
         d_a = self.gene_gene_intercept(g_a).squeeze(-1)
         d_b = self.gene_gene_intercept(g_b).squeeze(-1)
-        return self.alpha_gene_gene + d_a + d_b - F.softplus(self.beta_gene_gene) * self.compute_distance(u_a, u_b)
+        base = self.alpha_gene_gene + d_a + d_b
+        if self.latent_dim == 0:
+            return base
+        u_a = self.gene_embeddings(g_a)
+        u_b = self.gene_embeddings(g_b)
+        return base - F.softplus(self.beta_gene_gene) * self.compute_distance(u_a, u_b)
 
     def forward(self, p1, p2):
         return self.forward_iso_iso(p1, p2)
@@ -114,6 +125,8 @@ class MultimodalLDM(nn.Module):
             return self._isoform_latent(idx).cpu().numpy()
 
     def get_gene_embeddings(self):
+        if self.latent_dim == 0:
+            raise ValueError("No gene latent positions when latent_dim=0")
         return self.gene_embeddings.weight.detach().cpu().numpy()
 
     def get_random_effects(self):
@@ -132,6 +145,8 @@ class MultimodalLDM(nn.Module):
                 pass only training-set isoforms to avoid leaking held-out positions.
             protein_to_idx: isoform → index mapping.
         """
+        if self.latent_dim == 0:
+            raise ValueError("Cannot initialize gene centroids when latent_dim=0")
         device = self.gene_embeddings.weight.device
         n_iso  = self.esmc_features.shape[0]
         iso_positions = self._isoform_latent(torch.arange(n_iso, device=device))
