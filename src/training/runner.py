@@ -116,7 +116,7 @@ def _load_all_splits(d, mm, seed, model_type, is_inductive):
     return data
 
 
-def run_single(cfg, seed, config_path, split_cache=None):
+def run_single(cfg, seed, config_path, split_cache=None, parent_dir=None):
     """Run one full training + evaluation with the given random seed.
 
     Both the data split and model weight initialisation are seeded with `seed`,
@@ -130,6 +130,9 @@ def run_single(cfg, seed, config_path, split_cache=None):
                       are loaded from disk on a hit and written on a miss,
                       eliminating redundant CSV reads and negative sampling
                       across runs that share the same seed and config.
+        parent_dir:   if set, save this run under parent_dir/seed_{seed}/ instead
+                      of the default models/<split>_<model>_<timestamp>/. Use this
+                      when grouping multiple runs under a shared output directory.
 
     Returns:
         dict with at minimum:
@@ -303,11 +306,14 @@ def run_single(cfg, seed, config_path, split_cache=None):
         )
 
     # ── 5. Save dir + config snapshot ─────────────────────────────────────────
-    timestamp  = datetime.now().strftime('%Y%m%d_%H%M%S')
     split_tag  = {'transductive': 'TRANS', 'inductive': 'IND'}[split_mode]
     model_tag  = 'LDM' if model_type == 'ldm' else 'MM'
-    models_dir = cfg.get('paths', {}).get('models_dir', 'models')
-    save_dir   = f"{models_dir}/{split_tag}_{model_tag}_{timestamp}"
+    if parent_dir is not None:
+        save_dir = os.path.join(parent_dir, f"seed_{seed}")
+    else:
+        timestamp  = datetime.now().strftime('%Y%m%d_%H%M%S')
+        models_dir = cfg.get('paths', {}).get('models_dir', 'models')
+        save_dir   = f"{models_dir}/{split_tag}_{model_tag}_{timestamp}"
     os.makedirs(save_dir, exist_ok=True)
     shutil.copy(config_path, f"{save_dir}/config.yaml")
 

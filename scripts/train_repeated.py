@@ -98,7 +98,8 @@ def main():
         print(f"\n{'='*70}")
         print(f"RUN {i + 1}/{args.n_seeds}  (seed={seed})")
         print(f"{'='*70}")
-        metrics = run_single(cfg, seed, args.config, split_cache=split_cache)
+        metrics = run_single(cfg, seed, args.config, split_cache=split_cache,
+                             parent_dir=args.output_dir)
         all_results.append(metrics)
 
     # ── Aggregate statistics ──────────────────────────────────────────────────

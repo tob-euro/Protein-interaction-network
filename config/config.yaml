@@ -9,11 +9,11 @@ data:
 
 model:
   type: multimodal        # ldm | multimodal
-  latent_dim: 8
+  latent_dim: 2
 
 
 training:
-  epochs: 2
+  epochs: 1
   learning_rate: 0.001
   batch_size: 1024
   weight_decay: 1.0e-5
@@ -21,7 +21,7 @@ training:
 
 
 multimodal:
-  proj_hidden_dim: 16      # hidden dim of ESM-C projection and random-effect MLPs
+  proj_hidden_dim: 42      # hidden dim of ESM-C projection and random-effect MLPs
   lambda_iso_iso: 1.0      # loss weight: iso–iso pairs
   lambda_gene_iso: 0.5     # loss weight: gene–iso bipartite
   lambda_gene_gene: 0.25   # loss weight: gene–gene STRING (0 = disabled)

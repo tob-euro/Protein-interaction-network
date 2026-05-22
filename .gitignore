@@ -17,6 +17,7 @@ models/
 !models/.gitkeep
 figures/
 !figures/.gitkeep
+.cache/
 
 # Jupyter
 .ipynb_checkpoints/
