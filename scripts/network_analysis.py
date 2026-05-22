@@ -16,6 +16,10 @@ os.makedirs(FIGURES_DIR, exist_ok=True)
 def load_network(csv_file):
     df = pd.read_csv(csv_file)
     print(f"Loaded {len(df)} protein pairs")
+
+    if 'interact' not in df.columns:
+        df['interact'] = (df['pi'] >= 0.5).astype(int)
+
     return df
 
 
@@ -186,4 +190,4 @@ def main(csv_file):
 
 
 if __name__ == "__main__":
-    main("data/results_PHYSICAL_Prob_Model_16_02_26.csv")
+    main("data/results_PHYSICAL_Prob_Model_DL_15_05_26.csv")

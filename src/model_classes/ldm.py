@@ -6,7 +6,7 @@ from sklearn.metrics import roc_auc_score, average_precision_score
 
 
 class LatentDistanceModel(nn.Module):
-    """Latent Distance Model: P(Y_ij=1) = sigmoid(r_i + r_j − β·||z_i − z_j||).
+    """Latent Distance Model: P(Y_ij=1) = sigmoid(alpha + r_i + r_j − β·||z_i − z_j||).
 
     Args:
         num_proteins: number of distinct isoforms in the embedding table.
