@@ -203,13 +203,15 @@ class MultimodalTrainer:
                     optimizer, crit_iso_iso, crit_gene_iso, crit_gene_gene,
                     lambda_iso_iso, lambda_gene_iso, lambda_gene_gene):
         self.model.train()
-        n_steps = max(len(iso_iso_loader), len(gene_iso_loader), len(gene_gene_loader))
+        n_gi    = len(gene_iso_loader)  if gene_iso_loader  else 0
+        n_gg    = len(gene_gene_loader) if gene_gene_loader else 0
+        n_steps = max(len(iso_iso_loader), n_gi, n_gg)
 
         # Cycle shorter loaders to match the longest, then scale each modality's λ
         # by its cycling factor so unique samples contribute equal weight per epoch.
-        eff_iso_iso   = lambda_iso_iso   / (n_steps / len(iso_iso_loader))
-        eff_gene_iso  = lambda_gene_iso  / (n_steps / len(gene_iso_loader))
-        eff_gene_gene = lambda_gene_gene / (n_steps / len(gene_gene_loader))
+        eff_iso_iso   = lambda_iso_iso   * len(iso_iso_loader) / n_steps
+        eff_gene_iso  = lambda_gene_iso  * n_gi / n_steps if n_gi  > 0 else 0.0
+        eff_gene_gene = lambda_gene_gene * n_gg / n_steps if n_gg  > 0 else 0.0
 
         iso_iso_iter   = self._make_iter(iso_iso_loader,   n_steps, True)
         gene_iso_iter  = self._make_iter(gene_iso_loader,  n_steps, lambda_gene_iso  > 0)
@@ -285,18 +287,18 @@ class MultimodalTrainer:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='max', factor=0.5, patience=2)
 
         best_ap, best_epoch, best_state = 0.0, 0, None
-        n_ii, n_gi, n_gg = len(iso_iso_loader), len(gene_iso_loader), len(gene_gene_loader)
+        n_ii, n_gi, n_gg = len(iso_iso_loader), len(gene_iso_loader) if gene_iso_loader else 0, len(gene_gene_loader) if gene_gene_loader else 0
         n_steps = max(n_ii, n_gi, n_gg)
 
-        print(f"Training MultimodalLDM (3 modalities) on {device}")
+        print(f"Training MultimodalLDM on {device}")
         print(f"  λ — iso_iso={lambda_iso_iso}  gene_iso={lambda_gene_iso}  "
               f"gene_gene={lambda_gene_gene}")
         print(f"  pos_weights — iso_iso: {iso_iso_pos_weight:.2f}  "
               f"gene_iso: {gene_iso_pos_weight:.2f}  gene_gene: {gene_gene_pos_weight:.2f}")
         print(f"  Steps/epoch: {n_steps}  (ii={n_ii}  gi={n_gi}  gg={n_gg}; shorter loaders cycle)")
         print(f"  Effective λ — iso_iso: {lambda_iso_iso:.3f}  "
-              f"gene_iso: {lambda_gene_iso / (n_steps / n_gi):.3f}  "
-              f"gene_gene: {lambda_gene_gene / (n_steps / n_gg):.3f}")
+              f"gene_iso: {lambda_gene_iso * n_gi / n_steps if n_gi > 0 else 0:.3f}  "
+              f"gene_gene: {lambda_gene_gene * n_gg / n_steps if n_gg > 0 else 0:.3f}")
         print(f"  Patience: {patience}")
         print("-" * 70)
 

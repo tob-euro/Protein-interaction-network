@@ -42,6 +42,7 @@ def _build_split_key(d, mm, seed, model_type):
     }
     if model_type == 'multimodal':
         key['neg_ratio']     = int(mm['neg_ratio'])
+        key['has_gene_iso']  = mm.get('lambda_gene_iso',  0) > 0
         key['has_gene_gene'] = mm.get('lambda_gene_gene', 0) > 0
     return key
 
@@ -88,19 +89,20 @@ def _load_all_splits(d, mm, seed, model_type, is_inductive):
 
     # ── Gene–isoform split ────────────────────────────────────────────────────
     neg_ratio = mm['neg_ratio']
+    lambda_gi = mm.get('lambda_gene_iso', 0)
     lambda_gg = mm.get('lambda_gene_gene', 0)
     held_out  = (val_proteins | test_proteins) if is_inductive else None
-
-    gene_to_idx, train_gi, _, _, gene_iso_ratio = prepare_gene_isoform_splits(
-        df_full, protein_to_idx, train_data, val_data, test_data,
-        neg_ratio=neg_ratio, random_state=seed,
-        inductive=is_inductive,
-        held_out_isoforms=held_out)
-    data.update({
-        'gene_to_idx':    gene_to_idx,
-        'train_gi':       train_gi,
-        'gene_iso_ratio': gene_iso_ratio,
-    })
+    if lambda_gi > 0:
+        gene_to_idx, train_gi, _, _, gene_iso_ratio = prepare_gene_isoform_splits(
+            df_full, protein_to_idx, train_data, val_data, test_data,
+            neg_ratio=neg_ratio, random_state=seed,
+            inductive=is_inductive,
+            held_out_isoforms=held_out)
+        data.update({
+            'gene_to_idx':    gene_to_idx,
+            'train_gi':       train_gi,
+            'gene_iso_ratio': gene_iso_ratio,
+        })
 
     # ── Gene–gene split (STRING) ──────────────────────────────────────────────
     if lambda_gg > 0:
@@ -196,9 +198,9 @@ def run_single(cfg, seed, config_path, split_cache=None, parent_dir=None):
     protein_to_idx = split_data['protein_to_idx']
     num_proteins   = split_data['num_proteins']
     neg_pos_ratio  = split_data['neg_pos_ratio']
-    train_proteins = split_data.get('train_proteins')
-    val_proteins   = split_data.get('val_proteins')
-    test_proteins  = split_data.get('test_proteins')
+    train_proteins = split_data['train_proteins']
+    val_proteins   = split_data['val_proteins']
+    test_proteins  = split_data['test_proteins']
     held_out_isoforms = (val_proteins | test_proteins) if is_inductive else set()
 
     print(f"\n  Proteins: {num_proteins:,}  |  Train: {len(train_data):,}  "
@@ -218,18 +220,20 @@ def run_single(cfg, seed, config_path, split_cache=None, parent_dir=None):
     test_loader  = DataLoader(ProteinInteractionDataset(test_data,  protein_to_idx),
                               batch_size=bs, shuffle=False, num_workers=nw)
 
-    gene_gene_loader = gene_gene_testloader = None
-    gene_gene_ratio  = 1.0
+    # Initialize additional modalities to None and 0 if they are not used
+    gene_iso_loader = gene_gene_loader = gene_gene_testloader = gene_to_idx = None
+    gene_gene_ratio = gene_iso_ratio = num_genes = 0
 
     if model_type == 'multimodal':
-        gene_to_idx    = split_data['gene_to_idx']
-        train_gi       = split_data['train_gi']
-        gene_iso_ratio = split_data['gene_iso_ratio']
-        num_genes      = len(gene_to_idx)
-        print(f"\nStep 2b: Gene–isoform loader  "
-              f"({num_genes:,} genes  |  pos_weight: {gene_iso_ratio:.1f})")
-        gene_iso_loader = DataLoader(GeneIsoformDataset(train_gi),
-                                     batch_size=bs, shuffle=True, num_workers=nw)
+        if lambda_gi > 0:
+            gene_to_idx    = split_data['gene_to_idx']
+            train_gi       = split_data['train_gi']
+            gene_iso_ratio = split_data['gene_iso_ratio']
+            num_genes      = len(gene_to_idx)
+            print(f"\nStep 2b: Gene–isoform loader  "
+                f"({num_genes:,} genes  |  pos_weight: {gene_iso_ratio:.1f})")
+            gene_iso_loader = DataLoader(GeneIsoformDataset(train_gi),
+                                        batch_size=bs, shuffle=True, num_workers=nw)
 
         if lambda_gg > 0:
             gg_train        = split_data['gg_train']
@@ -291,7 +295,7 @@ def run_single(cfg, seed, config_path, split_cache=None, parent_dir=None):
         best_ap = trainer.train(
             iso_iso_loader       = train_loader,
             gene_iso_loader      = gene_iso_loader,
-            gene_gene_loader     = gene_gene_loader or gene_iso_loader,
+            gene_gene_loader     = gene_gene_loader,
             val_loader           = val_loader,
             epochs               = epochs,
             lr                   = lr,
