@@ -1,14 +1,3 @@
-"""Plot ROC and Precision-Recall curves with mean ± 95% CI bands across seeds.
-
-Searches for model groups whose directory name contains a given search word,
-loads each seed's model + test split, and plots one aggregated curve per group.
-
-Usage:
-    python scripts/plot_curves.py "trans_ldm_seeds=10"
-    python scripts/plot_curves.py "seeds=10" --models_dir models --output plots/comparison
-    python scripts/plot_curves.py "trans_ldm" --no_cache
-"""
-
 import argparse
 import os
 import re
@@ -18,15 +7,80 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import yaml
-from sklearn.metrics import (
-    average_precision_score, precision_recall_curve, roc_auc_score, roc_curve,
-)
+from scipy.stats import t as student_t
+from sklearn.metrics import ( average_precision_score, precision_recall_curve, roc_auc_score, roc_curve)
 from torch.utils.data import DataLoader
 
 from src.data_scripts.isoform_pairs import ProteinInteractionDataset
 from src.data_scripts.split_cache import SplitCache
 from src.training.evaluate import load_model
 from src.training.runner import _build_split_key, _load_all_splits
+
+
+DTU_COLORS = {
+    'dtured': '#990000',
+    'blue': '#2F3EEA',
+    'brightgreen': '#1FD082',
+    'navyblue': '#030F4F',
+    'yellow': '#F6D04D',
+    'orange': '#FC7634',
+    'pink': '#F7BBB1',
+    'grey': '#DADADA',
+    'red': '#E83F48',
+    'green': '#008835',
+    'purple': '#79238E',
+}
+DTU_CYCLE = [
+    DTU_COLORS['dtured'],
+    DTU_COLORS['blue'],
+    DTU_COLORS['brightgreen'],
+    DTU_COLORS['navyblue'],
+    DTU_COLORS['yellow'],
+    DTU_COLORS['orange'],
+    DTU_COLORS['grey'],
+    DTU_COLORS['red'],
+    DTU_COLORS['green'],
+    DTU_COLORS['purple'],
+]
+
+
+def _apply_dtu_matplotlib_style():
+    """Approximate the DTU thesis plot style for rendered PNG figures."""
+    plt.rcParams.update({
+        'font.family': 'sans-serif',
+        'font.sans-serif': ['Arial', 'Helvetica', 'DejaVu Sans'],
+        'font.size': 9,
+        'axes.labelsize': 10,
+        'axes.titlesize': 10,
+        'axes.prop_cycle': plt.cycler(color=DTU_CYCLE),
+        'axes.edgecolor': '#666666',
+        'axes.linewidth': 0.8,
+        'axes.labelcolor': '#111111',
+        'xtick.color': '#111111',
+        'ytick.color': '#111111',
+        'xtick.labelsize': 9,
+        'ytick.labelsize': 9,
+        'xtick.major.size': 0,
+        'ytick.major.size': 0,
+        'grid.color': DTU_COLORS['grey'],
+        'grid.linewidth': 0.5,
+        'grid.alpha': 1.0,
+        'legend.fontsize': 7,
+        'legend.frameon': False,
+        'savefig.bbox': 'tight',
+        'savefig.pad_inches': 0.08,
+        'pdf.fonttype': 42,
+        'ps.fonttype': 42,
+    })
+
+
+def _style_dtu_axes(ax, grid_axis='both'):
+    ax.grid(True, axis=grid_axis)
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
+    ax.spines['left'].set_visible(False)
+    ax.spines['bottom'].set_visible(False)
+    ax.tick_params(axis='both', length=0)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -114,14 +168,39 @@ def _interp_roc(fpr, tpr, grid):
 
 
 def _interp_pr(recall, precision, grid):
-    # sklearn returns recall in decreasing order; flip for np.interp
+    # sklearn returns a step curve with recall in decreasing order and many
+    # duplicate recall values. np.interp expects strictly increasing x-values;
+    # using duplicate recall coordinates can create artificial one-point spikes
+    # in averaged PR plots. Collapse duplicates before interpolation.
     idx = np.argsort(recall)
-    return np.interp(grid, recall[idx], precision[idx])
+    recall_sorted = recall[idx]
+    precision_sorted = precision[idx]
+
+    recall_unique, inverse = np.unique(recall_sorted, return_inverse=True)
+    precision_unique = np.zeros_like(recall_unique, dtype=float)
+    np.maximum.at(precision_unique, inverse, precision_sorted)
+
+    # Precision-recall plots are commonly displayed as the precision envelope.
+    # This affects only the displayed curve/band, not AP values.
+    precision_unique = np.maximum.accumulate(precision_unique[::-1])[::-1]
+    return np.interp(grid, recall_unique, precision_unique)
+
+
+def _ci95(values, axis=0):
+    values = np.asarray(values, dtype=float)
+    n = values.shape[axis]
+    if n < 2:
+        return np.zeros_like(values.mean(axis=axis))
+    return (
+        student_t.ppf(0.975, n - 1)
+        * values.std(axis=axis, ddof=1)
+        / np.sqrt(n)
+    )
 
 
 # ── Per-group processing ──────────────────────────────────────────────────────
 
-def process_group(group_dir, cache, device, fpr_grid, recall_grid):
+def process_group(group_dir, cache, device, fpr_grid, recall_grid, batch_size):
     seed_dirs = _find_seed_dirs(group_dir)
     if not seed_dirs:
         print(f"  [skip] no seed directories in {group_dir}")
@@ -153,7 +232,13 @@ def process_group(group_dir, cache, device, fpr_grid, recall_grid):
 
         test_data, _ = _get_test_data(cfg, seed, cache)
 
-        preds, labels = _run_inference(model, test_data, protein_to_idx_ckpt, device)
+        preds, labels = _run_inference(
+            model,
+            test_data,
+            protein_to_idx_ckpt,
+            device,
+            batch_size=batch_size,
+        )
 
         fpr, tpr, _       = roc_curve(labels, preds)
         recall, prec, _   = precision_recall_curve(labels, preds)
@@ -172,8 +257,8 @@ def process_group(group_dir, cache, device, fpr_grid, recall_grid):
     n = len(aucs)
     mean_auc, std_auc = np.mean(aucs), np.std(aucs, ddof=1)
     mean_ap,  std_ap  = np.mean(aps),  np.std(aps,  ddof=1)
-    ci_auc = 1.96 * std_auc / np.sqrt(n)
-    ci_ap  = 1.96 * std_ap  / np.sqrt(n)
+    ci_auc = _ci95(aucs)
+    ci_ap  = _ci95(aps)
 
     tpr_arr  = np.vstack(tpr_curves)
     prec_arr = np.vstack(prec_curves)
@@ -187,59 +272,64 @@ def process_group(group_dir, cache, device, fpr_grid, recall_grid):
         'mean_ap':  mean_ap,  'std_ap':  std_ap,  'ci_ap':  ci_ap,
         'aucs': aucs,
         'aps':  aps,
-        'mean_tpr':  tpr_arr.mean(axis=0),  'std_tpr':  tpr_arr.std(axis=0),
-        'mean_prec': prec_arr.mean(axis=0), 'std_prec': prec_arr.std(axis=0),
+        'mean_tpr':  tpr_arr.mean(axis=0),  'ci_tpr':  _ci95(tpr_arr, axis=0),
+        'mean_prec': prec_arr.mean(axis=0), 'ci_prec': _ci95(prec_arr, axis=0),
     }
 
 
 # ── Plotting ──────────────────────────────────────────────────────────────────
 
-def _plot_band(ax, x, mean, std, label, color, n_sigma=1.96, alpha=0.15):
+def _plot_band(ax, x, mean, ci, label, color, alpha=0.15):
     ax.plot(x, mean, color=color, label=label, linewidth=1.8)
-    ax.fill_between(x, mean - n_sigma * std, mean + n_sigma * std,
-                    color=color, alpha=alpha)
+    lower = np.clip(mean - ci, 0, 1)
+    upper = np.clip(mean + ci, 0, 1)
+    ax.fill_between(x, lower, upper, color=color, alpha=alpha)
 
 
 def make_figures(results, fpr_grid, recall_grid, title):
+    _apply_dtu_matplotlib_style()
     colors = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
-    fig_roc, ax_roc = plt.subplots(figsize=(8, 6))
-    ax_roc.plot([0, 1], [0, 1], 'k--', label='Random', linewidth=1)
+    fig_roc, ax_roc = plt.subplots(figsize=(6.3, 4.2))
+    ax_roc.plot([0, 1], [0, 1], linestyle='--', color='#666666', label='Random', linewidth=1)
 
-    fig_pr, ax_pr = plt.subplots(figsize=(8, 6))
+    fig_pr, ax_pr = plt.subplots(figsize=(6.3, 4.2))
 
     for i, r in enumerate(results):
         color = colors[i % len(colors)]
 
-        lbl_roc = (f"{r['curve_label']}\n"
-                   f"AUC = {r['mean_auc']:.3f}  [95% CI ±{r['ci_auc']:.3f}]")
-        lbl_pr  = (f"{r['curve_label']}\n"
-                   f"AP = {r['mean_ap']:.3f}  [95% CI ±{r['ci_ap']:.3f}]")
+        lbl_roc = (
+            f"{r['curve_label']} "
+            f"(AUC {r['mean_auc']:.3f} ± {r['ci_auc']:.3f})"
+        )
+        lbl_pr = (
+            f"{r['curve_label']} "
+            f"(AP {r['mean_ap']:.3f} ± {r['ci_ap']:.3f})"
+        )
 
-        _plot_band(ax_roc, fpr_grid,    r['mean_tpr'],  r['std_tpr'],  lbl_roc, color)
-        _plot_band(ax_pr,  recall_grid, r['mean_prec'], r['std_prec'], lbl_pr,  color)
+        _plot_band(ax_roc, fpr_grid,    r['mean_tpr'],  r['ci_tpr'],  lbl_roc, color)
+        _plot_band(ax_pr,  recall_grid, r['mean_prec'], r['ci_prec'], lbl_pr,  color)
 
     ax_roc.set_xlabel('False Positive Rate')
     ax_roc.set_ylabel('True Positive Rate')
-    ax_roc.set_title(f'ROC Curves — {title}')
-    ax_roc.legend(loc='lower right', fontsize=7)
-    ax_roc.grid(True, alpha=0.3)
+    ax_roc.legend(loc='lower center', bbox_to_anchor=(0.5, -0.36), ncol=2)
+    _style_dtu_axes(ax_roc, grid_axis='both')
     ax_roc.set_xlim(0, 1); ax_roc.set_ylim(0, 1)
 
     ax_pr.set_xlabel('Recall')
     ax_pr.set_ylabel('Precision')
-    ax_pr.set_title(f'Precision-Recall Curves — {title}')
-    ax_pr.legend(loc='upper right', fontsize=7)
-    ax_pr.grid(True, alpha=0.3)
+    ax_pr.legend(loc='lower center', bbox_to_anchor=(0.5, -0.28), ncol=2)
+    _style_dtu_axes(ax_pr, grid_axis='both')
     ax_pr.set_xlim(0, 1); ax_pr.set_ylim(0, 1)
 
-    fig_roc.tight_layout()
-    fig_pr.tight_layout()
+    fig_roc.tight_layout(rect=(0, 0.16, 1, 1))
+    fig_pr.tight_layout(rect=(0, 0.10, 1, 1))
     return fig_roc, fig_pr
 
 
 def make_boxplot(results, title):
     """Box plots showing the per-seed AUC and AP distributions per group."""
+    _apply_dtu_matplotlib_style()
     # Extract just the numeric part of each label for tick marks, e.g. "0", "2"
     tick_labels = []
     for r in results:
@@ -250,7 +340,7 @@ def make_boxplot(results, title):
     ap_data  = [r['aps']  for r in results]
     colors   = plt.rcParams['axes.prop_cycle'].by_key()['color']
 
-    fig, (ax_auc, ax_ap) = plt.subplots(1, 2, figsize=(10, 5))
+    fig, (ax_auc, ax_ap) = plt.subplots(1, 2, figsize=(6.6, 3.3))
 
     for ax, data, metric in ((ax_auc, auc_data, 'AUC-ROC'),
                              (ax_ap,  ap_data,  'Average Precision')):
@@ -271,8 +361,7 @@ def make_boxplot(results, title):
         ax.set_xticklabels(tick_labels, fontsize=10)
         ax.set_xlabel('Latent dimension')
         ax.set_ylabel(metric)
-        ax.set_title(f'{metric} — {title}')
-        ax.grid(True, axis='y', alpha=0.3)
+        _style_dtu_axes(ax, grid_axis='y')
         ax.set_ylim(bottom=max(0, min(min(v) for v in data) - 0.05))
 
     fig.tight_layout()
@@ -297,6 +386,8 @@ def main():
                         help='Disable split cache — forces re-reading the CSV')
     parser.add_argument('--n_points',    type=int, default=1000,
                         help='Resolution of the interpolation grid')
+    parser.add_argument('--batch_size',  type=int, default=16384,
+                        help='Inference batch size used when scoring test pairs')
     parser.add_argument('--title',       default=None,
                         help='Title for all plots (defaults to the search word)')
     args = parser.parse_args()
@@ -322,7 +413,14 @@ def main():
 
     results = []
     for group_dir in groups:
-        r = process_group(group_dir, cache, device, fpr_grid, recall_grid)
+        r = process_group(
+            group_dir,
+            cache,
+            device,
+            fpr_grid,
+            recall_grid,
+            args.batch_size,
+        )
         if r is not None:
             results.append(r)
 
@@ -347,8 +445,9 @@ def main():
     fig_pr.savefig(pr_path,  dpi=300, bbox_inches='tight')
     fig_box.savefig(box_path, dpi=300, bbox_inches='tight')
     print(f"\nSaved:\n  {roc_path}\n  {pr_path}\n  {box_path}")
-
-    plt.show()
+    plt.close(fig_roc)
+    plt.close(fig_pr)
+    plt.close(fig_box)
 
 
 if __name__ == '__main__':

@@ -1,22 +1,12 @@
-"""Train with N different random splits; report mean ± std and 95% CI statistics.
-
-Usage:
-    python scripts/train_repeated.py --n_seeds 5
-    python scripts/train_repeated.py --n_seeds 10 --base_seed 0 --config config/config.yaml
-
-Each run uses a distinct seed that controls both the data split and model weight
-initialisation, giving an unbiased estimate of performance variance over splits.
-Per-run model checkpoints are saved to individual timestamped directories.
-Aggregate statistics and a per-run CSV are written to a shared output directory.
-"""
-
 import argparse
+import math
 import os
 from datetime import datetime
 
 import numpy as np
 import pandas as pd
 import yaml
+from scipy.stats import t as student_t
 
 from src.data_scripts.split_cache import SplitCache
 from src.training.runner import run_single
@@ -28,7 +18,7 @@ def _stats(values):
     n = len(a)
     mean = float(a.mean())
     std  = float(a.std(ddof=1))
-    ci   = 1.96 * std / np.sqrt(n)
+    ci   = float(student_t.ppf(0.975, n - 1) * std / math.sqrt(n))
     return mean, std, ci
 
 

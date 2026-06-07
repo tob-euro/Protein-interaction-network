@@ -1,5 +1,3 @@
-"""Single-run training + evaluation logic shared by train.py and train_repeated.py."""
-
 import os
 import shutil
 from datetime import datetime
@@ -12,16 +10,10 @@ from torch.utils.data import DataLoader
 
 from src.data_scripts.gene_isoform_pairs import GeneIsoformDataset, prepare_gene_isoform_splits
 from src.data_scripts.gene_pairs import GeneGeneDataset, prepare_gene_gene_splits
-from src.data_scripts.isoform_pairs import (
-    ProteinInteractionDataset,
-    diagnose_split, diagnose_split_inductive,
-    load_and_prepare_data, load_and_prepare_data_inductive, load_esmc_features,
-)
+from src.data_scripts.isoform_pairs import (ProteinInteractionDataset, diagnose_split, diagnose_split_inductive, load_and_prepare_data, load_and_prepare_data_inductive, load_esmc_features)
 from src.model_classes.ldm import LatentDistanceModel, LatentDistanceTrainer
 from src.model_classes.mm_ldm import MultimodalLDM, MultimodalTrainer
-from src.training.evaluate import (
-    evaluate_gene_gene, evaluate_inductive_model_separately, evaluate_model,
-)
+from src.training.evaluate import (evaluate_gene_gene, evaluate_inductive_model_separately, evaluate_model)
 
 
 def _build_split_key(d, mm, seed, model_type):

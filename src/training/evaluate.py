@@ -1,15 +1,21 @@
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from sklearn.metrics import (
-    average_precision_score, confusion_matrix,
-    precision_recall_curve, roc_auc_score, roc_curve,
-)
+import hashlib
+from sklearn.metrics import (average_precision_score, confusion_matrix, precision_recall_curve, roc_auc_score, roc_curve)
 from torch.utils.data import DataLoader
 
 from src.data_scripts.isoform_pairs import ProteinInteractionDataset, load_esmc_features
 from src.model_classes.ldm import LatentDistanceModel
 from src.model_classes.mm_ldm import MultimodalLDM
+
+
+_ESMC_FEATURE_CACHE = {}
+
+
+def _protein_order_hash(protein_to_idx):
+    ordered = "\n".join(sorted(protein_to_idx, key=protein_to_idx.get))
+    return hashlib.sha256(ordered.encode()).hexdigest()
 
 
 def load_model(model_path, device='cpu', only_re=False):
@@ -25,15 +31,22 @@ def load_model(model_path, device='cpu', only_re=False):
     """
     checkpoint = torch.load(model_path, map_location=device, weights_only=False)
     model_type = checkpoint.get('model_type', 'ldm')
+    state = dict(checkpoint['model_state_dict'])
 
     if model_type == 'multimodal':
         # Old checkpoints stored esmc_features inside state_dict; new ones store
         # only a path and reload from disk to keep .pt files small.
-        esmc_features = checkpoint['model_state_dict'].pop('esmc_features', None)
+        esmc_features = state.pop('esmc_features', None)
         if esmc_features is None:
-            esmc_features = load_esmc_features(
-                checkpoint['esmc_path'], checkpoint['protein_to_idx']
+            cache_key = (
+                checkpoint['esmc_path'],
+                _protein_order_hash(checkpoint['protein_to_idx']),
             )
+            if cache_key not in _ESMC_FEATURE_CACHE:
+                _ESMC_FEATURE_CACHE[cache_key] = load_esmc_features(
+                    checkpoint['esmc_path'], checkpoint['protein_to_idx']
+                )
+            esmc_features = _ESMC_FEATURE_CACHE[cache_key]
         model = MultimodalLDM(
             num_proteins  = checkpoint['num_proteins'],
             num_genes     = checkpoint['num_genes'],
@@ -41,7 +54,7 @@ def load_model(model_path, device='cpu', only_re=False):
             esmc_features = esmc_features,
             proj_hidden_dim = checkpoint.get('proj_hidden_dim', 42),
         )
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(state)
         print(f"Loaded MultimodalLDM: {model_path}")
         print(f"  AUC {checkpoint['test_auc']:.4f}  AP {checkpoint['test_ap']:.4f}")
         print(f"  latent={checkpoint['latent_dim']}  "
@@ -54,7 +67,7 @@ def load_model(model_path, device='cpu', only_re=False):
             num_proteins=checkpoint['num_proteins'],
             latent_dim=checkpoint['latent_dim'],
         )
-        model.load_state_dict(checkpoint['model_state_dict'])
+        model.load_state_dict(state)
         print(f"Loaded LatentDistanceModel: {model_path}")
         print(f"  AUC {checkpoint['test_auc']:.4f}  AP {checkpoint['test_ap']:.4f}  "
               f"latent={checkpoint['latent_dim']}")
