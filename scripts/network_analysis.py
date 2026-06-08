@@ -1,4 +1,5 @@
 import os
+import yaml
 from collections import Counter, defaultdict
 
 import matplotlib.pyplot as plt
@@ -8,9 +9,6 @@ import pandas as pd
 import seaborn as sns
 
 sns.set_style('whitegrid')
-
-FIGURES_DIR = "figures"
-os.makedirs(FIGURES_DIR, exist_ok=True)
 
 
 def load_network(csv_file):
@@ -55,7 +53,7 @@ def analyze_network_statistics(G):
     return degrees
 
 
-def plot_degree_distribution(degrees, save_path='degree_distribution.png'):
+def plot_degree_distribution(degrees, save_path='degree_distribution.png', output_dir='figures'):
     counts = Counter(degrees)
     fig, axes = plt.subplots(1, 2, figsize=(14, 5))
 
@@ -70,7 +68,7 @@ def plot_degree_distribution(degrees, save_path='degree_distribution.png'):
     axes[1].grid(True, alpha=0.3)
 
     plt.tight_layout()
-    out = f"{FIGURES_DIR}/{save_path}"
+    out = f"{output_dir}/{save_path}"
     plt.savefig(out, dpi=300, bbox_inches='tight')
     plt.show()
     print(f"Saved: {out}")
@@ -100,18 +98,7 @@ def analyze_bipartite_network(df):
     return degrees
 
 
-def plot_adjacency_matrix(G):
-    A = nx.to_numpy_array(G)
-    fig, ax = plt.subplots(figsize=(6, 6))
-    ax.imshow(A)
-    ax.set(title="Adjacency Matrix", xlabel="Node index", ylabel="Node index")
-    out = f"{FIGURES_DIR}/adjacency_matrix.png"
-    plt.savefig(out, dpi=300, bbox_inches='tight')
-    plt.show()
-    print(f"Saved: {out}")
-
-
-def dataframe_analysis(df, save_path):
+def dataframe_analysis(df, save_path, output_dir):
     pi = df["pi"].to_numpy()
     print(f"  mean: {pi.mean():.3f}  median: {np.median(pi):.3f}  "
           f"min: {pi.min()}  max: {pi.max()}")
@@ -130,15 +117,13 @@ def dataframe_analysis(df, save_path):
            title='Distribution of interaction probability (pi)')
     ax.set_yscale('log'); ax.legend(); ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    out = f"{FIGURES_DIR}/{save_path}"
+    out = f"{output_dir}/{save_path}"
     plt.savefig(out, dpi=300, bbox_inches='tight')
     plt.show()
     print(f"Saved: {out}")
 
 
-def load_gene_gene_network(string_path="data/STRING_protein_pairs_wscores_physical.csv",
-                           mapping_path="data/gene-isoform_mapping_enst_ensp_ensg.csv",
-                           use_interactions_only=True):
+def load_gene_gene_network(string_path, mapping_path, use_interactions_only=True):
     """Load STRING gene–gene pairs, map ENSP→ENSG, return a NetworkX graph."""
     string_df    = pd.read_csv(string_path)
     mapping_df   = pd.read_csv(mapping_path)
@@ -165,29 +150,35 @@ def load_gene_gene_network(string_path="data/STRING_protein_pairs_wscores_physic
     return G
 
 
-def main(csv_file):
+def main(iso_path, string_path, mapping_path, figures_dir):
     print("\n--- Protein network analysis ---")
-    df = load_network(csv_file)
-    dataframe_analysis(df, "Pi_distribution.png")
+    df = load_network(iso_path)
+    dataframe_analysis(df, "Pi_distribution.png", output_dir=figures_dir)
 
     G = create_graph(df, use_interactions_only=False)
     plot_degree_distribution(analyze_network_statistics(G),
-                             save_path="Unipartite_degree_distribution.png")
+                             save_path="Unipartite_degree_distribution.png", output_dir=figures_dir)
     find_hub_proteins(G, top_n=20)
 
-    G_pos = create_graph(df, use_interactions_only=True)
-    plot_adjacency_matrix(G_pos)
 
     print("\n--- Bipartite (gene-isoform) ---")
     plot_degree_distribution(analyze_bipartite_network(df),
-                             save_path="Bipartite_degree_distribution.png")
+                             save_path="Bipartite_degree_distribution.png", output_dir=figures_dir)
 
     print("\n--- Gene-gene (STRING) ---")
-    G_gene = load_gene_gene_network()
+    G_gene = load_gene_gene_network(string_path, mapping_path)
     plot_degree_distribution(analyze_network_statistics(G_gene),
-                             save_path="GeneGene_degree_distribution.png")
+                             save_path="GeneGene_degree_distribution.png", output_dir=figures_dir)
     find_hub_proteins(G_gene, top_n=20)
 
 
 if __name__ == "__main__":
-    main("data/results_PHYSICAL_Prob_Model_16_02_26.csv")
+    with open("config.yaml") as f:
+        cfg = yaml.safe_load(f)
+    
+    iso_path = cfg['data']['iso_path']
+    string_path = cfg['data']['string_path']
+    mapping_path = cfg['data']['mapping_path']
+    figures_dir = cfg['paths']['figures_dir']
+
+    main(iso_path, string_path, mapping_path, figures_dir)

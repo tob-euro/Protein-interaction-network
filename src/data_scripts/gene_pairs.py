@@ -4,11 +4,7 @@ from sklearn.model_selection import train_test_split
 from torch.utils.data import Dataset
 
 
-STRING_PATH  = "data/STRING_protein_pairs_wscores_physical.csv"
-MAPPING_PATH = "data/gene-isoform_mapping_enst_ensp_ensg.csv"
-
-
-def load_string_pairs(gene_to_idx, string_path=STRING_PATH, mapping_path=MAPPING_PATH):
+def load_string_pairs(gene_to_idx, string_path, mapping_path):
     """Load STRING pairs, expand gene_to_idx with STRING-only genes, map to indices.
 
     Args:
@@ -53,9 +49,8 @@ def load_string_pairs(gene_to_idx, string_path=STRING_PATH, mapping_path=MAPPING
     return pairs, expanded
 
 
-def prepare_gene_gene_splits(gene_to_idx, train_data, val_data, test_data,
-                             test_size=0.1, val_size=0.1, random_state=42,
-                             string_path=STRING_PATH, mapping_path=MAPPING_PATH,
+def prepare_gene_gene_splits(gene_to_idx, train_data, val_data, test_data, string_path,
+                             mapping_path, test_size=0.2, val_size=0.1, random_state=42,
                              inductive=False):
     """Load STRING, expand gene vocabulary, and split.
 

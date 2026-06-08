@@ -47,6 +47,8 @@ def _load_all_splits(d, mm, seed, model_type, is_inductive):
     The returned dict can be passed directly to SplitCache.put().
     """
     iso_path = d['iso_path']
+    string_path = d['string_path']
+    mapping_path = d['mapping_path']
     val_size = d['val_fraction']
     test_size = d['test_fraction']
 
@@ -99,7 +101,7 @@ def _load_all_splits(d, mm, seed, model_type, is_inductive):
     # ── Gene–gene split (STRING) ──────────────────────────────────────────────
     if lambda_gg > 0:
         gg_train, _, gg_test, gene_to_idx, gene_gene_ratio = prepare_gene_gene_splits(
-            gene_to_idx, train_data, val_data, test_data, inductive=is_inductive)
+            gene_to_idx, train_data, val_data, test_data, string_path, mapping_path, inductive=is_inductive)
         data.update({
             'gene_to_idx':      gene_to_idx,   # overwrite with STRING-expanded mapping
             'gg_train':         gg_train,

@@ -45,8 +45,6 @@ def main():
     parser = argparse.ArgumentParser(
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description=__doc__)
-    parser.add_argument('--config',     default='config/config.yaml',
-                        help='YAML config file')
     parser.add_argument('--n_seeds',    type=int, default=5,
                         help='Number of random seeds to run')
     parser.add_argument('--base_seed',  type=int, default=42,
@@ -63,7 +61,7 @@ def main():
                         help='Directory for cached split files')
     args = parser.parse_args()
 
-    with open(args.config) as f:
+    with open("config.yaml") as f:
         cfg = yaml.safe_load(f)
 
     seeds       = list(range(args.base_seed, args.base_seed + args.n_seeds))
@@ -78,7 +76,6 @@ def main():
     print(f"\n{'='*70}")
     print(f"Repeated-split training: {args.n_seeds} runs  "
           f"(seeds {seeds[0]}–{seeds[-1]})")
-    print(f"Config:      {args.config}")
     print(f"Split cache: {'enabled → ' + args.cache_dir if args.cache else 'disabled'}")
     print(f"Results:     {args.output_dir}")
     print(f"{'='*70}")
@@ -88,7 +85,7 @@ def main():
         print(f"\n{'='*70}")
         print(f"RUN {i + 1}/{args.n_seeds}  (seed={seed})")
         print(f"{'='*70}")
-        metrics = run_single(cfg, seed, args.config, split_cache=split_cache,
+        metrics = run_single(cfg, seed, "config.yaml", split_cache=split_cache,
                              parent_dir=args.output_dir)
         all_results.append(metrics)
 
