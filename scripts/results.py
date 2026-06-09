@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import math
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -13,6 +14,9 @@ from typing import Iterable
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+
+os.environ.setdefault("XDG_CACHE_HOME", str(REPO_ROOT / ".cache"))
+os.environ.setdefault("MPLCONFIGDIR", str(REPO_ROOT / ".cache" / "matplotlib"))
 
 import matplotlib.pyplot as plt
 from matplotlib.colors import LinearSegmentedColormap, PowerNorm

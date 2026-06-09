@@ -64,6 +64,7 @@ config.yaml                    Main run configuration
 scripts/train.py               Single training run
 scripts/train_repeated.py      Repeated training across multiple seeds
 scripts/plot_curves.py         Aggregate ROC/PR/box plots across seed groups
+scripts/results.py             Thesis result summaries, tests, and figures
 scripts/network_analysis.py    Dataset and network statistics
 src/data_scripts/              Data loading, splitting, and cache helpers
 src/model_classes/             LDM and multimodal LDM implementations
@@ -114,18 +115,38 @@ models/repeated_<timestamp>/
 Use `--output_dir` to choose a specific group name, for example:
 
 ```bash
-python scripts/train_repeated.py --n_seeds 10 --output_dir models/ind_mm_ldm_seeds=10_latent_dim=2 --cache
+python scripts/train_repeated.py --n_seeds 10 --output_dir models/ind_mmldm_seeds=10_latent_dim=2 --cache
 ```
 
 ### Aggregate Curves Across Seed Groups
 
 ```bash
-python scripts/plot_curves.py "ind_mm_ldm" --models_dir models --output_dir figures/ind_mmldm_seeds=10
+python scripts/plot_curves.py "ind_mmldm" --models_dir models --output_dir figures/ind_mmldm_seeds=10
 ```
 
 The plotting script searches model group directory names for the given
 substring, loads each `seed_<N>/model.pt` and `seed_<N>/config.yaml`, rebuilds
 the matching test splits, and makes aggregated ROC, PR, and boxplot figures.
+
+### Reproduce Results
+
+```bash
+python scripts/results.py
+```
+
+This prints the thesis result tables and extended statistical tests directly in
+the terminal, using the repeated-run CSVs under `models/`. It also writes the
+inductive ablation figure to `figures/`.
+
+Use `--rq3` to include the results from RQ3 (gene-gene evaluation), `--prediction-diagnostics` to include the fixed-threshold diagnostics results for transductive and inductive with full modality with latent_dim=32. To include all results use `--all`.
+
+```bash
+python scripts/results.py --rq3
+python scripts/results.py --prediction-diagnostics
+python scripts/results.py --all
+```
+
+NOTE: the directory names for the different configurations are hardcoded in line 48-51 in results.py, so change them accordingly. All generated result figures are saved directly in `figures/`.
 
 ### Network Analysis
 

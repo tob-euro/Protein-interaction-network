@@ -47,8 +47,8 @@ def _load_all_splits(d, mm, seed, model_type, is_inductive):
     The returned dict can be passed directly to SplitCache.put().
     """
     iso_path = d['iso_path']
-    string_path = d['string_path']
-    mapping_path = d['mapping_path']
+    string_path = d.get('string_path', 'data/STRING_protein_pairs_wscores_physical.csv')
+    mapping_path = d.get('mapping_path', 'data/gene-isoform_mapping_enst_ensp_ensg.csv')
     val_size = d['val_fraction']
     test_size = d['test_fraction']
 
