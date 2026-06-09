@@ -64,6 +64,7 @@ config.yaml                    Main run configuration
 scripts/train.py               Single training run
 scripts/train_repeated.py      Repeated training across multiple seeds
 scripts/plot_curves.py         Aggregate ROC/PR/box plots across seed groups
+scripts/results.py             Thesis result summaries, tests, and figures
 scripts/network_analysis.py    Dataset and network statistics
 src/data_scripts/              Data loading, splitting, and cache helpers
 src/model_classes/             LDM and multimodal LDM implementations
@@ -126,6 +127,27 @@ python scripts/plot_curves.py "ind_mm_ldm" --models_dir models --output_dir figu
 The plotting script searches model group directory names for the given
 substring, loads each `seed_<N>/model.pt` and `seed_<N>/config.yaml`, rebuilds
 the matching test splits, and makes aggregated ROC, PR, and boxplot figures.
+
+### Thesis Results
+
+```bash
+python scripts/results.py
+```
+
+This prints the thesis result tables and extended statistical tests directly in
+the terminal, using the repeated-run CSVs under `models/`. It also writes the
+inductive ablation figure to `figures/`.
+
+RQ3 STRING reconstruction and checkpoint-based threshold diagnostics are
+opt-in because they rescore saved checkpoints:
+
+```bash
+python scripts/results.py --rq3
+python scripts/results.py --prediction-diagnostics
+python scripts/results.py --all
+```
+
+All generated result figures are saved directly in `figures/`.
 
 ### Network Analysis
 

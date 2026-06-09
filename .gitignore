@@ -26,3 +26,7 @@ figures/
 # IDEs
 .vscode/
 .idea/
+
+# project plan and related work stuff
+DTU_Bachelor_Project_Plan.pdf
+related_work/
